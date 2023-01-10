@@ -1,0 +1,62 @@
+name: Compile idevicerestore
+on: [push]
+jobs:
+  linux-idr:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run compile script
+        run: ./compile.sh
+
+      - name: Move idevicerestore binary
+        run: mv ./bin/idevicerestore_linux .
+
+      - name: Zip idevicerestore
+        run: zip -r idevicerestore_linux.zip idevicerestore_linux
+
+      - name: Update latest release
+        uses: pyTooling/Actions/releaser@main
+        with:
+          tag: latest
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: idevicerestore_linux.zip
+
+  linux-limd:
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Run compile script
+        run: ./compile.sh limd
+
+      - name: Zip libimobiledevice
+        run: zip -r libimobiledevice_linux.zip bin/libimobiledevice/
+
+      - name: Update latest release
+        uses: pyTooling/Actions/releaser@main
+        with:
+          tag: latest
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: libimobiledevice_linux.zip
+
+  win:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+
+      - name: Run compile script
+        run: ./compile.sh
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: idevicerestore_win
+          path: bin/
