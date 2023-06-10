@@ -805,7 +805,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 					unlink(filesystem);
 				return -1;
 			}
-			info("exploiting with limera1n\n");
+			//info("exploiting with limera1n\n");
 			// TODO: check for non-limera1n device and fail
 			if (limera1n_exploit(client->device, &client->dfu->client) != 0) {
 				error("ERROR: limera1n exploit failed\n");
@@ -815,7 +815,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 				return -1;
 			}
 			dfu_client_free(client);
-			info("exploited\n");
+			//info("exploited\n");
 		}
 		if (dfu_enter_recovery(client, build_identity) < 0) {
 			error("ERROR: Unable to place device into recovery mode from %s mode\n", client->mode->string);

@@ -47,6 +47,7 @@ int limera1n_is_supported(struct irecv_device *device)
 
 int limera1n_exploit(struct irecv_device *device, irecv_client_t *pclient)
 {
+	return 0;
 	irecv_error_t err = IRECV_E_SUCCESS;
 	unsigned int i = 0;
 	unsigned char buf[0x800];
