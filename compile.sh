@@ -67,6 +67,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone https://github.com/lzfse/lzfse
     git clone https://github.com/libimobiledevice/libplist
     git clone https://github.com/libimobiledevice/libusbmuxd
+    [[ $1 == "limd" ]] && git clone https://github.com/libimobiledevice/libimobiledevice-glue
     git clone https://github.com/libimobiledevice/libimobiledevice
     git clone https://github.com/libimobiledevice/libirecovery
     git clone https://github.com/libimobiledevice/libideviceactivation
@@ -102,16 +103,25 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libplist..."
     cd $FR_BASE
     cd libplist
-    git reset --hard 787a449
+    [[ $1 != "limd" ]] && git reset --hard 787a449
     git clean -fxd
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
     make $JNUM install
 
+    if [[ $1 == "limd" ]]; then
+        echo "Building libimobiledevice-glue..."
+        cd $FR_BASE
+        cd libimobiledevice-glue
+        ./autogen.sh $CONF_ARGS $CC_ARGS
+        make $JNUM
+        make $JNUM install
+    fi
+
     echo "Building libusbmuxd..."
     cd $FR_BASE
     cd libusbmuxd
-    git reset --hard 3eb50a0
+    [[ $1 != "limd" ]] && git reset --hard 3eb50a0
     git clean -fxd
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
@@ -120,7 +130,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libimobiledevice..."
     cd $FR_BASE
     cd libimobiledevice
-    git reset --hard ca32415
+    [[ $1 != "limd" ]] && git reset --hard ca32415
     git clean -fxd
     ./autogen.sh $CONF_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
     make $JNUM
@@ -129,7 +139,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libirecovery..."
     cd $FR_BASE
     cd libirecovery
-    git reset --hard 4793494
+    [[ $1 != "limd" ]] && git reset --hard 4793494
     git clean -fxd
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
@@ -142,14 +152,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     make $JNUM
     make $JNUM install
 
-    echo "Building libzip..."
-    cd $FR_BASE
-    cd libzip
-    sed -i 's/\"Build shared libraries\" ON/\"Build shared libraries\" OFF/g' CMakeLists.txt
-    cmake $CC_ARGS .
-    make $JNUM
-    make $JNUM install
-
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
         cd ..
@@ -157,6 +159,14 @@ if [[ $OSTYPE == "linux"* ]]; then
         cp /usr/local/bin/i* bin/libimobiledevice/
         exit
     fi
+
+    echo "Building libzip..."
+    cd $FR_BASE
+    cd libzip
+    sed -i 's/\"Build shared libraries\" ON/\"Build shared libraries\" OFF/g' CMakeLists.txt
+    cmake $CC_ARGS .
+    make $JNUM
+    make $JNUM install
 
     echo "Building libbz2..."
     cd $FR_BASE
