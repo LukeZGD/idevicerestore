@@ -8,7 +8,9 @@ rm -rf tmp
 mkdir bin tmp 2>/dev/null
 cd tmp
 
-set -e
+if [[ $1 != "limd" ]]; then
+    set -e
+fi
 
 sslver="1.1.1s"
 if [[ $OSTYPE == "linux"* ]]; then
@@ -69,6 +71,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone https://github.com/libimobiledevice/libusbmuxd
     [[ $1 == "limd" ]] && git clone https://github.com/libimobiledevice/libimobiledevice-glue
     git clone https://github.com/libimobiledevice/libimobiledevice
+    [[ $1 == "limd" ]] && git clone https://github.com/libimobiledevice/usbmuxd
     git clone https://github.com/libimobiledevice/libirecovery
     git clone https://github.com/libimobiledevice/libideviceactivation
     git clone https://github.com/nih-at/libzip
@@ -136,6 +139,15 @@ if [[ $OSTYPE == "linux"* ]]; then
     make $JNUM
     make $JNUM install
 
+    if [[ $1 == "limd" ]]; then
+        echo "Building usbmuxd..."
+        cd $FR_BASE
+        cd usbmuxd
+        ./autogen.sh $CONF_ARGS $CC_ARGS
+        make $JNUM
+        make $JNUM install
+    fi
+
     echo "Building libirecovery..."
     cd $FR_BASE
     cd libirecovery
@@ -156,7 +168,7 @@ if [[ $OSTYPE == "linux"* ]]; then
         cd $FR_BASE
         cd ..
         mkdir bin/libimobiledevice
-        cp /usr/local/bin/i* bin/libimobiledevice/
+        cp /usr/local/bin/i* /usr/local/sbin/usbmuxd bin/libimobiledevice/
         exit
     fi
 
