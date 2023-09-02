@@ -222,70 +222,24 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	info("Found device in %s mode\n", client->mode->string);
 
 	if (client->mode->index == MODE_WTF) {
-		unsigned int cpid = 0;
-
 		if (dfu_client_new(client) != 0) {
 			error("ERROR: Could not open device in WTF mode\n");
 			return -1;
 		}
-		if ((dfu_get_cpid(client, &cpid) < 0) || (cpid == 0)) { 
-			error("ERROR: Could not get CPID for WTF mode device\n");
-			dfu_client_free(client);
-			return -1;
-		}
 
 		char wtfname[256];
-		sprintf(wtfname, "Firmware/dfu/WTF.s5l%04xxall.RELEASE.dfu", cpid);
+		sprintf(wtfname, "Firmware/dfu/WTF.s5l8900xall.RELEASE.dfu");
 		unsigned char* wtftmp = NULL;
 		unsigned int wtfsize = 0;
 
 		// Prefer to get WTF file from the restore IPSW
 		ipsw_extract_to_memory(client->ipsw, wtfname, &wtftmp, &wtfsize);
 		if (!wtftmp) {
-			// Download WTF IPSW
-			char* s_wtfurl = NULL;
-			plist_t wtfurl = plist_access_path(client->version_data, 7, "MobileDeviceSoftwareVersionsByVersion", "5", "RecoverySoftwareVersions", "WTF", "304218112", "5", "FirmwareURL");
-			if (wtfurl && (plist_get_node_type(wtfurl) == PLIST_STRING)) {
-				plist_get_string_val(wtfurl, &s_wtfurl);
-			}
-			if (!s_wtfurl) {
-				info("Using hardcoded x12220000_5_Recovery.ipsw URL\n");
-				s_wtfurl = strdup("http://appldnld.apple.com.edgesuite.net/content.info.apple.com/iPhone/061-6618.20090617.Xse7Y/x12220000_5_Recovery.ipsw");
-			}
-
-			// make a local file name
-			char* fnpart = strrchr(s_wtfurl, '/');
-			if (!fnpart) {
-				fnpart = (char*)"x12220000_5_Recovery.ipsw";
-			} else {
-				fnpart++;
-			}
-			struct stat fst;
-			char wtfipsw[1024];
-			if (client->cache_dir) {
-				if (stat(client->cache_dir, &fst) < 0) {
-					mkdir_with_parents(client->cache_dir, 0755);
-				}
-				strcpy(wtfipsw, client->cache_dir);
-				strcat(wtfipsw, "/");
-				strcat(wtfipsw, fnpart);
-			} else {
-				strcpy(wtfipsw, fnpart);
-			}
-			if (stat(wtfipsw, &fst) != 0) {
-				download_to_file(s_wtfurl, wtfipsw, 0);
-			}
-
-			ipsw_extract_to_memory(wtfipsw, wtfname, &wtftmp, &wtfsize);
-			if (!wtftmp) {
-				error("ERROR: Could not extract WTF\n");
-			}
+			error("ERROR: Could not extract WTF\n");
 		}
 
-		if (wtftmp) {
-			if (dfu_send_buffer(client, wtftmp, wtfsize) != 0) {
-				error("ERROR: Could not send WTF...\n");
-			}
+		if (dfu_send_buffer(client, wtftmp, wtfsize) != 0) {
+			error("ERROR: Could not send WTF...\n");
 		}
 		dfu_client_free(client);
 
