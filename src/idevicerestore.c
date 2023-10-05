@@ -117,71 +117,6 @@ void usage(int argc, char* argv[]) {
 
 static int idevicerestore_keep_pers = 0;
 
-static int load_version_data(struct idevicerestore_client_t* client)
-{
-	if (!client) {
-		return -1;
-	}
-
-	struct stat fst;
-	int cached = 0;
-
-	char version_xml[1024];
-
-	if (client->cache_dir) {
-		if (stat(client->cache_dir, &fst) < 0) {
-			mkdir_with_parents(client->cache_dir, 0755);
-		}
-		strcpy(version_xml, client->cache_dir);
-		strcat(version_xml, "/");
-		strcat(version_xml, VERSION_XML);
-	} else {
-		strcpy(version_xml, VERSION_XML);
-	}
-
-	if ((stat(version_xml, &fst) < 0) || ((time(NULL)-86400) > fst.st_mtime)) {
-		char version_xml_tmp[1024];
-		strcpy(version_xml_tmp, version_xml);
-		strcat(version_xml_tmp, ".tmp");
-
-		if (download_to_file("http://itunes.apple.com/check/version",  version_xml_tmp, 0) == 0) {
-			remove(version_xml);
-			if (rename(version_xml_tmp, version_xml) < 0) {
-				error("ERROR: Could not update '%s'\n", version_xml);
-			} else {
-				info("NOTE: Updated version data.\n");
-			}
-		}
-	} else {
-		cached = 1;
-	}
-
-	char *verbuf = NULL;
-	size_t verlen = 0;
-	read_file(version_xml, (void**)&verbuf, &verlen);
-
-	if (!verbuf) {
-		error("ERROR: Could not load '%s'\n", version_xml);
-		return -1;
-	}
-
-	client->version_data = NULL;
-	plist_from_xml(verbuf, verlen, &client->version_data);
-	free(verbuf);
-
-	if (!client->version_data) {
-		remove(version_xml);
-		error("ERROR: Cannot parse plist data from '%s'.\n", version_xml);
-		return -1;
-	}
-
-	if (cached) {
-		info("NOTE: using cached version data\n");
-	}
-
-	return 0;
-}
-
 int idevicerestore_start(struct idevicerestore_client_t* client)
 {
 	int tss_enabled = 0;
@@ -208,9 +143,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 
 	idevicerestore_progress(client, RESTORE_STEP_DETECT, 0.0);
-
-	// update version data (from cache, or apple if too old)
-	load_version_data(client);
 
 	// check which mode the device is currently in so we know where to start
 	if (check_mode(client) < 0 || client->mode->index == MODE_UNKNOWN ||
@@ -282,18 +214,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return 0;
 	}
 
-	if (client->flags & FLAG_LATEST) {
-		char* ipsw = NULL;
-		int res = ipsw_download_latest_fw(client->version_data, client->device->product_type, client->cache_dir, &ipsw);
-		if (res != 0) {
-			if (ipsw) {
-				free(ipsw);
-			}
-			return res;
-		} else {
-			client->ipsw = ipsw;
-		}
-	}
 	idevicerestore_progress(client, RESTORE_STEP_DETECT, 0.6);
 
 	if (client->flags & FLAG_NOACTION) {
@@ -938,9 +858,6 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 
 	if (client->tss_url) {
 		free(client->tss_url);
-	}
-	if (client->version_data) {
-		plist_free(client->version_data);
 	}
     if (client->nonce) {
         free(client->nonce);
