@@ -251,10 +251,15 @@ int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build
 		}
 	}
 
-	mutex_lock(&client->device_event_mutex);
-	if (recovery_send_kernelcache(client, build_identity) < 0) {
-		mutex_unlock(&client->device_event_mutex);
+	if (recovery_send_kernelcache_noboot(client, build_identity) < 0) {
 		error("ERROR: Unable to send KernelCache\n");
+		return -1;
+	}
+
+	mutex_lock(&client->device_event_mutex);
+	if (recovery_boot_kernelcache(client) < 0) {
+		mutex_unlock(&client->device_event_mutex);
+		error("ERROR: Unable to boot KernelCache\n");
 		return -1;
 	}
 
@@ -370,6 +375,14 @@ int recovery_send_component_and_command(struct idevicerestore_client_t* client, 
 
 int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_identity)
 {
+	irecv_error_t recovery_error = IRECV_E_SUCCESS;
+	recovery_error = recovery_send_ibec_nogo(client, build_identity);
+	if (!recovery_error) recovery_error = recovery_run_go(client);
+	return recovery_error;
+}
+
+int recovery_send_ibec_nogo(struct idevicerestore_client_t* client, plist_t build_identity)
+{
 	const char* component = "iBEC";
 	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 
@@ -383,14 +396,18 @@ int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_ide
 		error("ERROR: Unable to send %s to device.\n", component);
 		return -1;
 	}
+	return 0;
+}
 
+int recovery_run_go(struct idevicerestore_client_t* client)
+{
+	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 	recovery_error = irecv_send_command_breq(client->recovery->client, "go", 1);
 	if (recovery_error != IRECV_E_SUCCESS) {
-		error("ERROR: Unable to execute %s\n", component);
+		error("ERROR: Unable to run 'go'\n");
 		return -1;
 	}
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
-
 	return 0;
 }
 
@@ -513,7 +530,7 @@ int recovery_send_ramdisk(struct idevicerestore_client_t* client, plist_t build_
 	return 0;
 }
 
-int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t build_identity)
+int recovery_send_kernelcache_noboot(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	const char* component = "RestoreKernelCache";
 	irecv_error_t recovery_error = IRECV_E_SUCCESS;
@@ -531,6 +548,12 @@ int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t bu
 
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
 
+	return 0;
+}
+
+int recovery_boot_kernelcache(struct idevicerestore_client_t* client)
+{
+	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 	if (client->restore_boot_args) {
 		char setba[256];
 		strcpy(setba, "setenv boot-args ");
@@ -540,11 +563,20 @@ int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t bu
 
 	recovery_error = irecv_send_command_breq(client->recovery->client, "bootx", 1);
 	if (recovery_error != IRECV_E_SUCCESS) {
-		error("ERROR: Unable to execute %s\n", component);
+		error("ERROR: Unable to execute 'bootx'\n");
 		return -1;
 	}
 
 	return 0;
+}
+
+int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t build_identity){
+	irecv_error_t recovery_error = IRECV_E_SUCCESS;
+	recovery_error = recovery_send_kernelcache_noboot(client, build_identity);
+	if (!recovery_error){
+		recovery_error = recovery_boot_kernelcache(client);
+	}
+	return recovery_error;
 }
 
 int recovery_is_image4_supported(struct idevicerestore_client_t* client)

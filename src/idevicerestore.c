@@ -1290,12 +1290,19 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			}
 		}
 
-		mutex_lock(&client->device_event_mutex);
-
 		/* now we load the iBEC */
-		if (recovery_send_ibec(client, build_identity) < 0) {
+		if (recovery_send_ibec_nogo(client, build_identity) < 0) {
 			mutex_unlock(&client->device_event_mutex);
 			error("ERROR: Unable to send iBEC\n");
+			return -2;
+		}
+
+		mutex_lock(&client->device_event_mutex);
+
+		/* now we run the iBEC */
+		if (recovery_run_go(client) < 0) {
+			mutex_unlock(&client->device_event_mutex);
+			error("ERROR: Unable to run iBEC\n");
 			return -2;
 		}
 		recovery_client_free(client);

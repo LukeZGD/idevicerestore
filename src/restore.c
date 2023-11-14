@@ -206,6 +206,13 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 			plist_t hwinfo = NULL;
 
 			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
+				if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+					/*
+						This info isn't available pre-iOS 3, so whatever
+						Just don't restore multiple pre-iOS 3 devices at once ;)
+					*/
+					goto found_device;
+				}
 				continue;
 			}
 
@@ -227,6 +234,7 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 				continue;
 			}
 		}
+	found_device:
 		if (restore) {
 			restored_client_free(restore);
 			restore = NULL;
@@ -424,6 +432,14 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		restored_client_free(restored);
 		idevice_free(device);
 		plist_free(hwinfo);
+		if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+			/*
+				This info isn't available pre-iOS 3, so whatever
+				Just don't restore multiple pre-iOS 3 devices at once ;)
+			*/
+			debug("%s: pre-iOS 3 restore detected, continuing restore without ecid check!", __func__);
+			return 1;
+		}
 		return 0;
 	}
 	restored_client_free(restored);
