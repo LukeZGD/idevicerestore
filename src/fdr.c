@@ -30,10 +30,10 @@
 #include <libimobiledevice/libimobiledevice.h>
 #include <libimobiledevice-glue/socket.h>
 
-#include "common.h"
-#include "idevicerestore.h"
-#include "fdr.h"
-#include <endianness.h> /* from libimobiledevice */
+#include <idevicerestore/common.h>
+#include <idevicerestore/idevicerestore.h>
+#include <idevicerestore/fdr.h>
+#include <idevicerestore/endianness.h> /* from libimobiledevice */
 
 #define CTRL_PORT 0x43a /*1082*/
 #define CTRLCMD  "BeginCtrl"

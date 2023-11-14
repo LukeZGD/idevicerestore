@@ -22,7 +22,7 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,7 +37,7 @@
 #ifdef HAVE_OPENSSL
 #include <openssl/sha.h>
 #else
-#include "sha1.h"
+#include <idevicerestore/sha1.h>
 #define SHA_CTX SHA1_CTX
 #define SHA1_Init SHA1Init
 #define SHA1_Update SHA1Update
@@ -47,11 +47,11 @@
 #include <libimobiledevice-glue/termcolors.h>
 #include <plist/plist.h>
 
-#include "ipsw.h"
-#include "locking.h"
-#include "download.h"
-#include "common.h"
-#include "idevicerestore.h"
+#include <idevicerestore/ipsw.h>
+#include <idevicerestore/locking.h>
+#include <idevicerestore/download.h>
+#include <idevicerestore/common.h>
+#include <idevicerestore/idevicerestore.h>
 
 #define BUFSIZE 0x100000
 
@@ -111,7 +111,7 @@ int ipsw_print_info(const char* path)
 
 	if (memcmp(&magic, "PK\x03\x04", 4) == 0) {
 		ipsw_archive_t ipsw = ipsw_open(thepath);
-		unsigned int rlen = 0;
+		size_t rlen = 0;
 		if (ipsw_extract_to_memory(ipsw, "BuildManifest.plist", (unsigned char**)&plist_buf, &rlen) < 0) {
 			ipsw_close(ipsw);
 			error("ERROR: Failed to extract BuildManifest.plist from IPSW!\n");
@@ -582,7 +582,7 @@ int ipsw_file_exists(ipsw_archive_t ipsw, const char* infile)
 	return 1;
 }
 
-int ipsw_extract_to_memory(ipsw_archive_t ipsw, const char* infile, unsigned char** pbuffer, unsigned int* psize)
+int ipsw_extract_to_memory(ipsw_archive_t ipsw, const char* infile, unsigned char** pbuffer, size_t* psize)
 {
 	size_t size = 0;
 	unsigned char* buffer = NULL;
@@ -819,7 +819,7 @@ int ipsw_extract_send(ipsw_archive_t ipsw, const char* infile, int blocksize, ip
 
 int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int *tss_enabled)
 {
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char* data = NULL;
 
 	*tss_enabled = 0;
@@ -849,7 +849,7 @@ int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int
 
 int ipsw_extract_restore_plist(ipsw_archive_t ipsw, plist_t* restore_plist)
 {
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char* data = NULL;
 
 	if (ipsw_extract_to_memory(ipsw, "Restore.plist", &data, &size) == 0) {

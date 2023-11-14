@@ -24,9 +24,9 @@
 #include <string.h>
 #include <stdint.h>
 
-#include "ftab.h"
-#include "common.h"
-#include "endianness.h"
+#include <idevicerestore/ftab.h>
+#include <idevicerestore/common.h>
+#include <idevicerestore/endianness.h>
 
 int ftab_parse(unsigned char *data, unsigned int data_size, ftab_t *ftab, uint32_t *tag)
 {

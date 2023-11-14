@@ -22,7 +22,7 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 
 #include <stdio.h>
@@ -51,8 +51,8 @@
 #include <termios.h>
 #endif
 
-#include "common.h"
-#include "endianness.h"
+#include <idevicerestore/common.h>
+#include <idevicerestore/endianness.h>
 
 #define MAX_PRINT_LEN 64*1024
 

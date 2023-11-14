@@ -22,7 +22,7 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,17 +33,17 @@
 #ifdef HAVE_OPENSSL
 #include <openssl/sha.h>
 #else
-#include "sha1.h"
+#include <idevicerestore/sha1.h"
 #define SHA_CTX SHA1_CTX
 #define SHA1_Init SHA1Init
 #define SHA1_Update SHA1Update
 #define SHA1_Final SHA1Final
 #endif
 
-#include "asr.h"
-#include "idevicerestore.h"
-#include "common.h"
-#include "ipsw.h"
+#include <idevicerestore/asr.h>
+#include <idevicerestore/idevicerestore.h>
+#include <idevicerestore/common.h>
+#include <idevicerestore/ipsw.h>
 
 #define ASR_VERSION 1
 #define ASR_STREAM_ID 1

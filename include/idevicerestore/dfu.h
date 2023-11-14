@@ -29,7 +29,7 @@ extern "C" {
 #endif
 
 #include <libirecovery.h>
-#include "common.h"
+#include <idevicerestore/common.h>
 
 struct dfu_client_t {
 	irecv_client_t client;
@@ -40,9 +40,10 @@ struct dfu_client_t {
 int dfu_client_new(struct idevicerestore_client_t* client);
 void dfu_client_free(struct idevicerestore_client_t* client);
 irecv_device_t dfu_get_irecv_device(struct idevicerestore_client_t* client);
-int dfu_send_buffer(struct idevicerestore_client_t* client, unsigned char* buffer, unsigned int size);
+int dfu_send_buffer(struct idevicerestore_client_t* client, unsigned char* buffer, size_t size);
 int dfu_send_component(struct idevicerestore_client_t* client, plist_t build_identity, const char* component);
 int dfu_get_cpid(struct idevicerestore_client_t* client, unsigned int* cpid);
+int dfu_get_bdid(struct idevicerestore_client_t* client, unsigned int* bdid);
 int dfu_is_image4_supported(struct idevicerestore_client_t* client);
 int dfu_get_ap_nonce(struct idevicerestore_client_t* client, unsigned char** nonce, int* nonce_size);
 int dfu_get_sep_nonce(struct idevicerestore_client_t* client, unsigned char** nonce, int* nonce_size);

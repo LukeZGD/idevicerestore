@@ -25,15 +25,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "img3.h"
-#include "common.h"
-#include "idevicerestore.h"
+#include <idevicerestore/img3.h>
+#include <idevicerestore/common.h>
+#include <idevicerestore/idevicerestore.h>
 
 static void img3_free(img3_file* image);
 static img3_element* img3_parse_element(const unsigned char* data);
 static void img3_free_element(img3_element* element);
 
-static img3_file* img3_parse_file(const unsigned char* data, unsigned int size) {
+static img3_file* img3_parse_file(const unsigned char* data, size_t size) {
 	unsigned int data_offset = 0;
 	img3_element* element;
 	img3_header* header = (img3_header*) data;
@@ -402,7 +402,7 @@ static int img3_get_data(img3_file* image, unsigned char** pdata, unsigned int* 
 	return 0;
 }
 
-int img3_stitch_component(const char* component_name, const unsigned char* component_data, unsigned int component_size, const unsigned char* blob, unsigned int blob_size, unsigned char** img3_data, unsigned int *img3_size)
+int img3_stitch_component(const char* component_name, const unsigned char* component_data, size_t component_size, const unsigned char* blob, unsigned int blob_size, unsigned char** img3_data, unsigned int *img3_size)
 {
 	img3_file *img3 = NULL;
 	unsigned char* outbuf = NULL;

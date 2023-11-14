@@ -24,8 +24,8 @@
 #include <errno.h>
 #endif
 
-#include "locking.h"
-#include "common.h"
+#include <idevicerestore/locking.h>
+#include <idevicerestore/common.h>
 
 int lock_file(const char* filename, lock_info_t* lockinfo)
 {
@@ -113,4 +113,3 @@ int unlock_file(lock_info_t* lockinfo)
 #endif
 	return 0;
 }
-

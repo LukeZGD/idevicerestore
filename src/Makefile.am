@@ -1,4 +1,4 @@
-AM_CFLAGS = \
+AM_CFLAGS = -I$(srcdir)/../include\
 	$(GLOBAL_CFLAGS) \
 	$(LFS_CFLAGS) \
 	$(libirecovery_CFLAGS) \
@@ -54,3 +54,9 @@ endif
 idevicerestore_CFLAGS = $(AM_CFLAGS)
 idevicerestore_LDFLAGS = $(AM_LDFLAGS)
 idevicerestore_LDADD = $(AM_LDADD)
+
+lib_LTLIBRARIES = libidevicerestore.la
+libidevicerestore_la_SOURCES = $(idevicerestore_SOURCES)
+libidevicerestore_la_CFLAGS = $(idevicerestore_CFLAGS) -DIDEVICERESTORE_NOMAIN
+libidevicerestore_la_LDFLAGS = $(idevicerestore_LDFLAGS)
+libidevicerestore_la_LIBADD = $(idevicerestore_LDADD)

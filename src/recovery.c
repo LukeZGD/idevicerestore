@@ -29,11 +29,11 @@
 #include <libimobiledevice/restore.h>
 #include <libimobiledevice/libimobiledevice.h>
 
-#include "idevicerestore.h"
-#include "tss.h"
-#include "img3.h"
-#include "restore.h"
-#include "recovery.h"
+#include <idevicerestore/idevicerestore.h>
+#include <idevicerestore/tss.h>
+#include <idevicerestore/img3.h>
+#include <idevicerestore/restore.h>
+#include <idevicerestore/recovery.h>
 
 static int recovery_progress_callback(irecv_client_t client, const irecv_event_t* event)
 {
@@ -101,6 +101,26 @@ int recovery_client_new(struct idevicerestore_client_t* client)
 	return 0;
 }
 
+irecv_device_t recovery_get_irecv_device(struct idevicerestore_client_t* client)
+{
+	if(client->recovery == NULL) {
+		if (recovery_client_new(client) < 0) {
+			return NULL;
+		}
+	}
+	irecv_device_t device = NULL;
+	irecv_error_t dfu_error = IRECV_E_SUCCESS;
+	dfu_error = irecv_devices_get_device_by_client(client->recovery->client, &device);
+	if (dfu_error == IRECV_E_SUCCESS) {
+		if (client->ecid == 0) {
+			const struct irecv_device_info *device_info = irecv_get_device_info(client->recovery->client);
+			client->ecid = device_info->ecid;
+		}
+	}
+
+	return device;
+}
+
 int recovery_set_autoboot(struct idevicerestore_client_t* client, int enable)
 {
 	irecv_error_t recovery_error = IRECV_E_SUCCESS;
@@ -122,10 +142,16 @@ int recovery_set_autoboot(struct idevicerestore_client_t* client, int enable)
 
 int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build_identity)
 {
-	if (client->build_major >= 8) {
-		client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress");
-	} else if (client->macos_variant) {
-		client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -restore");
+	if (!client->restore_boot_args){
+		if (client->macos_variant) {
+			client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -restore");
+		} else {
+#ifdef DEBUG
+			client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -v serial=3");
+#else
+			client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress");
+#endif
+		}
 	}
 
 	/* upload data to make device boot restore mode */
@@ -277,7 +303,7 @@ int recovery_send_ticket(struct idevicerestore_client_t* client)
 
 int recovery_send_component(struct idevicerestore_client_t* client, plist_t build_identity, const char* component)
 {
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char* data = NULL;
 	char* path = NULL;
 	irecv_error_t err = 0;
@@ -296,7 +322,7 @@ int recovery_send_component(struct idevicerestore_client_t* client, plist_t buil
 	}
 
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	int ret = extract_component(client->ipsw, path, &component_data, &component_size);
 	free(path);
 	if (ret < 0) {
@@ -587,9 +613,44 @@ int recovery_get_sep_nonce(struct idevicerestore_client_t* client, unsigned char
 	return 0;
 }
 
+int recovery_get_cpid(struct idevicerestore_client_t* client, unsigned int* cpid)
+{
+	if(client->recovery == NULL) {
+		if (recovery_client_new(client) < 0) {
+			return -1;
+		}
+	}
+
+	const struct irecv_device_info *device_info = irecv_get_device_info(client->recovery->client);
+	if (!device_info) {
+		return -1;
+	}
+
+	*cpid = device_info->cpid;
+
+	return 0;
+}
+
+int recovery_get_bdid(struct idevicerestore_client_t* client, unsigned int* bdid)
+{
+	if(client->recovery == NULL) {
+		if (recovery_client_new(client) < 0) {
+			return -1;
+		}
+	}
+
+	const struct irecv_device_info *device_info = irecv_get_device_info(client->recovery->client);
+	if (!device_info) {
+		return -1;
+	}
+
+	*bdid = device_info->bdid;
+
+	return 0;
+}
+
 int recovery_send_reset(struct idevicerestore_client_t* client)
 {
 	irecv_send_command_breq(client->recovery->client, "reset", 1);
 	return 0;
 }
-

@@ -22,7 +22,7 @@
  */
 
 #ifdef HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 #include <limits.h>
 #include <stdio.h>
@@ -39,17 +39,18 @@
 #include <zip.h>
 #include <libirecovery.h>
 
-#include "idevicerestore.h"
-#include "asr.h"
-#include "fdr.h"
-#include "fls.h"
-#include "mbn.h"
-#include "ftab.h"
-#include "tss.h"
-#include "ipsw.h"
-#include "restore.h"
-#include "common.h"
-#include "endianness.h"
+#include <idevicerestore/idevicerestore.h>
+#include <idevicerestore/asr.h>
+#include <idevicerestore/fdr.h>
+#include <idevicerestore/fls.h>
+#include <idevicerestore/mbn.h>
+#include <idevicerestore/ftab.h>
+#include <idevicerestore/tss.h>
+#include <idevicerestore/ipsw.h>
+#include <idevicerestore/restore.h>
+#include <idevicerestore/common.h>
+#include <idevicerestore/endianness.h>
+#include <libimobiledevice-glue/utils.h>
 
 #define CREATE_PARTITION_MAP          11
 #define CREATE_FILESYSTEM             12
@@ -375,8 +376,16 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		return 0;
 	}
 	if (!client->ecid) {
-		error("ERROR: %s: no ECID given in client data\n", __func__);
-		return 0;
+		if (client->device && client->device->chip_id == 0x8900){
+			/*
+				iOS 1 restored doesn't tell us the device ECID, nor do we actually know it
+			*/
+			debug("%s: Skipping ECID check for 0x8900 device %s\n", __func__, udid);
+			return 1;
+		}else{
+			error("ERROR: %s: no ECID given in client data\n", __func__);
+			return 0;
+		}		
 	}
 
 	idevice_t device = NULL;
@@ -449,7 +458,7 @@ int restore_open_with_timeout(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
-	if (client->ecid == 0) {
+	if (client->ecid == 0 && (!client->device || client->device->chip_id != 0x8900)) {
 		error("ERROR: no ECID in client data!\n");
 		return -1;
 	}
@@ -1074,7 +1083,7 @@ int restore_send_root_ticket(restored_client_t restore, struct idevicerestore_cl
 
 int restore_send_component(restored_client_t restore, struct idevicerestore_client_t* client, plist_t build_identity, const char* component, const char* component_name)
 {
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char* data = NULL;
 	char* path = NULL;
 	plist_t blob = NULL;
@@ -1100,7 +1109,7 @@ int restore_send_component(restored_client_t restore, struct idevicerestore_clie
 	}
 
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	int ret = extract_component(client->ipsw, path, &component_data, &component_size);
 	free(path);
 	path = NULL;
@@ -1144,13 +1153,13 @@ int restore_send_nor(restored_client_t restore, struct idevicerestore_client_t* 
 	char* restore_sep_path = NULL;
 	char firmware_path[PATH_MAX - 9];
 	char manifest_file[PATH_MAX];
-	unsigned int manifest_size = 0;
+	size_t manifest_size = 0;
 	unsigned char* manifest_data = NULL;
 	char firmware_filename[PATH_MAX];
-	unsigned int llb_size = 0;
+	size_t llb_size = 0;
 	unsigned char* llb_data = NULL;
 	plist_t dict = NULL;
-	unsigned int nor_size = 0;
+	size_t nor_size = 0;
 	unsigned char* nor_data = NULL;
 	plist_t norimage = NULL;
 	plist_t firmware_files = NULL;
@@ -1261,22 +1270,26 @@ int restore_send_nor(restored_client_t restore, struct idevicerestore_client_t* 
 
 	const char* component = "LLB";
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
-	int ret = extract_component(client->ipsw, llb_path, &component_data, &component_size);
-	free(llb_path);
-	if (ret < 0) {
-		error("ERROR: Unable to extract component: %s\n", component);
-		return -1;
-	}
+	size_t component_size = 0;
+	int ret = 0;
+	if (!client->restore_custom_component_function || client->restore_custom_component_function(client, "LLB", &llb_data, &llb_size)){
+		ret = extract_component(client->ipsw, llb_path, &component_data, &component_size);
+		free(llb_path);
+		if (ret < 0) {
+			error("ERROR: Unable to extract component: %s\n", component);
+			return -1;
+		}
 
-	ret = personalize_component(component, component_data, component_size, client->tss, &llb_data, &llb_size);
-	free(component_data);
-	component_data = NULL;
-	component_size = 0;
-	if (ret < 0) {
-		error("ERROR: Unable to get personalized component: %s\n", component);
-		return -1;
+		ret = personalize_component(component, component_data, component_size, client->tss, &llb_data, &llb_size);
+		free(component_data);
+		component_data = NULL;
+		component_size = 0;
+		if (ret < 0) {
+			error("ERROR: Unable to get personalized component: %s\n", component);
+			return -1;
+		}
 	}
+	
 
 	dict = plist_new_dict();
 	plist_dict_set_item(dict, "LlbImageData", plist_new_data((char*)llb_data, (uint64_t) llb_size));
@@ -1314,29 +1327,30 @@ int restore_send_nor(restored_client_t restore, struct idevicerestore_client_t* 
 		}
 
 		component_data = NULL;
-		unsigned int component_size = 0;
-
-		if (extract_component(client->ipsw, comppath, &component_data, &component_size) < 0) {
-			free(iter);
-			free(comp);
-			free(comppath);
-			plist_free(firmware_files);
-			error("ERROR: Unable to extract component: %s\n", component);
-			return -1;
-		}
-
-		if (personalize_component(component, component_data, component_size, client->tss, &nor_data, &nor_size) < 0) {
-			free(iter);
-			free(comp);
-			free(comppath);
+		size_t component_size = 0;
+		
+		if (!client->restore_custom_component_function || client->restore_custom_component_function(client, component, &nor_data, &nor_size)){
+			if (extract_component(client->ipsw, comppath, &component_data, &component_size) < 0) {
+				free(iter);
+				free(comp);
+				free(comppath);
+				plist_free(firmware_files);
+				error("ERROR: Unable to extract component: %s\n", component);
+				return -1;
+			}
+			if (personalize_component(component, component_data, component_size, client->tss, &nor_data, &nor_size) < 0) {
+				free(iter);
+				free(comp);
+				free(comppath);
+				free(component_data);
+				plist_free(firmware_files);
+				error("ERROR: Unable to get personalized component: %s\n", component);
+				return -1;
+			}
 			free(component_data);
-			plist_free(firmware_files);
-			error("ERROR: Unable to get personalized component: %s\n", component);
-			return -1;
+			component_data = NULL;
+			component_size = 0;
 		}
-		free(component_data);
-		component_data = NULL;
-		component_size = 0;
 
 		if (flash_version_1) {
 			plist_dict_set_item(norimage, component, plist_new_data((char*)nor_data, (uint64_t)nor_size));
@@ -1360,25 +1374,28 @@ int restore_send_nor(restored_client_t restore, struct idevicerestore_client_t* 
 	plist_dict_set_item(dict, "NorImageData", norimage);
 
 	unsigned char* personalized_data = NULL;
-	unsigned int personalized_size = 0;
+	size_t personalized_size = 0;
 
 	if (build_identity_has_component(build_identity, "RestoreSEP") &&
 	    build_identity_get_component_path(build_identity, "RestoreSEP", &restore_sep_path) == 0) {
 		component = "RestoreSEP";
-		ret = extract_component(client->ipsw, restore_sep_path, &component_data, &component_size);
-		free(restore_sep_path);
-		if (ret < 0) {
-			error("ERROR: Unable to extract component: %s\n", component);
-			return -1;
-		}
 
-		ret = personalize_component(component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
-		free(component_data);
-		component_data = NULL;
-		component_size = 0;
-		if (ret < 0) {
-			error("ERROR: Unable to get personalized component: %s\n", component);
-			return -1;
+		if (!client->restore_custom_component_function || client->restore_custom_component_function(client, component, &personalized_data, &personalized_size)){
+			ret = extract_component(client->ipsw, restore_sep_path, &component_data, &component_size);
+			free(restore_sep_path);
+			if (ret < 0) {
+				error("ERROR: Unable to extract component: %s\n", component);
+				return -1;
+			}
+
+			ret = personalize_component(component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
+			free(component_data);
+			component_data = NULL;
+			component_size = 0;
+			if (ret < 0) {
+				error("ERROR: Unable to get personalized component: %s\n", component);
+				return -1;
+			}
 		}
 
 		plist_dict_set_item(dict, "RestoreSEPImageData", plist_new_data((char*)personalized_data, (uint64_t) personalized_size));
@@ -1390,20 +1407,23 @@ int restore_send_nor(restored_client_t restore, struct idevicerestore_client_t* 
 	if (build_identity_has_component(build_identity, "SEP") &&
 	    build_identity_get_component_path(build_identity, "SEP", &sep_path) == 0) {
 		component = "SEP";
-		ret = extract_component(client->ipsw, sep_path, &component_data, &component_size);
-		free(sep_path);
-		if (ret < 0) {
-			error("ERROR: Unable to extract component: %s\n", component);
-			return -1;
-		}
 
-		ret = personalize_component(component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
-		free(component_data);
-		component_data = NULL;
-		component_size = 0;
-		if (ret < 0) {
-			error("ERROR: Unable to get personalized component: %s\n", component);
-			return -1;
+		if (!client->restore_custom_component_function || client->restore_custom_component_function(client, component, &personalized_data, &personalized_size)){
+			ret = extract_component(client->ipsw, sep_path, &component_data, &component_size);
+			free(sep_path);
+			if (ret < 0) {
+				error("ERROR: Unable to extract component: %s\n", component);
+				return -1;
+			}
+
+			ret = personalize_component(component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
+			free(component_data);
+			component_data = NULL;
+			component_size = 0;
+			if (ret < 0) {
+				error("ERROR: Unable to get personalized component: %s\n", component);
+				return -1;
+			}
 		}
 
 		plist_dict_set_item(dict, "SEPImageData", plist_new_data((char*)personalized_data, (uint64_t) personalized_size));
@@ -1828,7 +1848,7 @@ leave:
 	return res;
 }
 
-static int restore_send_baseband_data(restored_client_t restore, struct idevicerestore_client_t* client, plist_t build_identity, plist_t message)
+static int restore_send_baseband_data(restored_client_t restore, struct idevicerestore_client_t* client, plist_t build_identity, plist_t message, const char *type)
 {
 	int res = -1;
 	uint64_t bb_cert_id = 0;
@@ -1843,6 +1863,7 @@ static int restore_send_baseband_data(restored_client_t restore, struct idevicer
 	plist_t dict = NULL;
 
 	info("About to send BasebandData...\n");
+	if (client->bbfw_buildidentity) build_identity = client->bbfw_buildidentity;
 
 	// NOTE: this function is called 2 or 3 times!
 
@@ -1856,6 +1877,11 @@ static int restore_send_baseband_data(restored_client_t restore, struct idevicer
 		plist_t bb_cert_id_node = plist_dict_get_item(arguments, "CertID");
 		if (bb_cert_id_node && plist_get_node_type(bb_cert_id_node) == PLIST_UINT) {
 			plist_get_uint_val(bb_cert_id_node, &bb_cert_id);
+		}else{
+			bb_cert_id_node = plist_dict_get_item(arguments, "GoldCertID");
+			if (bb_cert_id_node && plist_get_node_type(bb_cert_id_node) == PLIST_UINT) {
+				plist_get_uint_val(bb_cert_id_node, &bb_cert_id);
+			}
 		}
 		plist_t bb_snum_node = plist_dict_get_item(arguments, "ChipSerialNo");
 		if (bb_snum_node && plist_get_node_type(bb_snum_node) == PLIST_DATA) {
@@ -1933,8 +1959,8 @@ static int restore_send_baseband_data(restored_client_t restore, struct idevicer
 		return -1;
 	}
 
-	// extract baseband firmware to temp file
 	bbfwtmp = get_temp_filename("bbfw_");
+	// extract baseband firmware to temp file
 	if (!bbfwtmp) {
 		size_t l = strlen(client->udid);
 		bbfwtmp = malloc(l + 10);
@@ -1943,9 +1969,27 @@ static int restore_send_baseband_data(restored_client_t restore, struct idevicer
 		strcpy(bbfwtmp + 5 + l, ".tmp");
 		error("WARNING: Could not generate temporary filename, using %s in current directory\n", bbfwtmp);
 	}
-	if (ipsw_extract_to_file(client->ipsw, bbfwpath, bbfwtmp) != 0) {
-		error("ERROR: Unable to extract baseband firmware from ipsw\n");
-		goto leave;
+	if (client->bbfwpath){
+		char *tmpbuf = NULL;
+		uint64_t tmpbufSize = 0;
+		int ok = 0;
+		ok = buffer_read_from_filename(client->bbfwpath, &tmpbuf, &tmpbufSize);
+		if (!ok){
+			error("ERROR: Failed to read baseband file at '%s'\n",client->bbfwpath);
+			if (tmpbuf) free(tmpbuf);
+			goto leave;
+		}
+		ok = buffer_write_to_filename(bbfwtmp, tmpbuf, tmpbufSize);
+		if (tmpbuf) free(tmpbuf);
+		if (!ok){
+			error("ERROR: Failed to write baseband temp file to '%s'\n",bbfwtmp);
+			goto leave;
+		}
+	}else{
+		if (ipsw_extract_to_file(client->ipsw, bbfwpath, bbfwtmp) != 0) {
+			error("ERROR: Unable to extract baseband firmware from ipsw\n");
+			goto leave;
+		}
 	}
 
 	if (bb_nonce && !client->restore->bbtss) {
@@ -1969,7 +2013,7 @@ static int restore_send_baseband_data(restored_client_t restore, struct idevicer
 
 	// send file
 	dict = plist_new_dict();
-	plist_dict_set_item(dict, "BasebandData", plist_new_data(buffer, (uint64_t)sz));
+	plist_dict_set_item(dict, type, plist_new_data(buffer, (uint64_t)sz));
 	free(buffer);
 	buffer = NULL;
 
@@ -2083,9 +2127,9 @@ static int restore_send_image_data(restored_client_t restore, struct idevicerest
 					} else if (!image_name || !strcmp(image_name, component)) {
 						char *path = NULL;
 						unsigned char* data = NULL;
-						unsigned int size = 0;
+						size_t size = 0;
 						unsigned char* component_data = NULL;
-						unsigned int component_size = 0;
+						size_t component_size = 0;
 						int ret = -1;
 
 						if (!image_name) {
@@ -2168,7 +2212,7 @@ static plist_t restore_get_se_firmware_data(restored_client_t restore, struct id
 	const char *comp_name = NULL;
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	plist_t parameters = NULL;
 	plist_t request = NULL;
 	plist_t response = NULL;
@@ -2268,7 +2312,7 @@ static plist_t restore_get_savage_firmware_data(restored_client_t restore, struc
 	char *comp_name = NULL;
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	unsigned char* component_data_tmp = NULL;
 	plist_t parameters = NULL;
 	plist_t request = NULL;
@@ -2359,7 +2403,7 @@ static plist_t restore_get_yonkers_firmware_data(restored_client_t restore, stru
 	char *comp_name = NULL;
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	plist_t parameters = NULL;
 	plist_t request = NULL;
 	plist_t response = NULL;
@@ -2443,7 +2487,7 @@ static plist_t restore_get_rose_firmware_data(restored_client_t restore, struct 
 	char *comp_name = NULL;
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	ftab_t ftab = NULL;
 	ftab_t rftab = NULL;
 	uint32_t ftag = 0;
@@ -2562,7 +2606,7 @@ static plist_t restore_get_rose_firmware_data(restored_client_t restore, struct 
 			error("WARNING: Unexpected tag 0x%08x, expected 0x%08x; continuing anyway.\n", ftag, 'rkos');
 		}
 
-		if (ftab_get_entry_ptr(rftab, 'rrko', &component_data, &component_size) == 0) {
+		if (ftab_get_entry_ptr(rftab, 'rrko', &component_data, (unsigned int*)&component_size) == 0) {
 			ftab_add_entry(ftab, 'rrko', component_data, component_size);
 		} else {
 			error("ERROR: Could not find 'rrko' entry in ftab. This will probably break things.\n");
@@ -2574,7 +2618,7 @@ static plist_t restore_get_rose_firmware_data(restored_client_t restore, struct 
 		info("NOTE: Build identity does not have a '%s' component.\n", comp_name);
 	}
 
-	ftab_write(ftab, &component_data, &component_size);
+	ftab_write(ftab, &component_data, (unsigned int*)&component_size);
 	ftab_free(ftab);
 
 	plist_dict_set_item(response, "FirmwareData", plist_new_data((char *)component_data, (uint64_t)component_size));
@@ -2590,7 +2634,7 @@ static plist_t restore_get_veridian_firmware_data(restored_client_t restore, str
 	char *comp_name = "BMU,FirmwareMap";
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	plist_t parameters = NULL;
 	plist_t request = NULL;
 	plist_t response = NULL;
@@ -2741,7 +2785,7 @@ static plist_t restore_get_tcon_firmware_data(restored_client_t restore, struct 
 	char *comp_name = "Baobab,TCON";
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	plist_t parameters = NULL;
 	plist_t request = NULL;
 	plist_t response = NULL;
@@ -2810,7 +2854,7 @@ static plist_t restore_get_timer_firmware_data(restored_client_t restore, struct
 	char comp_name[64];
 	char *comp_path = NULL;
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 	ftab_t ftab = NULL;
 	ftab_t rftab = NULL;
 	uint32_t ftag = 0;
@@ -2967,8 +3011,8 @@ static plist_t restore_get_timer_firmware_data(restored_client_t restore, struct
 			error("WARNING: Unexpected tag 0x%08x, expected 0x%08x; continuing anyway.\n", ftag, 'rkos');
 		}
 
-		if (ftab_get_entry_ptr(rftab, 'rrko', &component_data, &component_size) == 0) {
-			ftab_add_entry(ftab, 'rrko', component_data, component_size);
+		if (ftab_get_entry_ptr(rftab, 'rrko', &component_data, (unsigned int*)&component_size) == 0) {
+			ftab_add_entry(ftab, 'rrko', component_data, (unsigned int)component_size);
 		} else {
 			error("ERROR: Could not find 'rrko' entry in ftab. This will probably break things.\n");
 		}
@@ -2979,7 +3023,7 @@ static plist_t restore_get_timer_firmware_data(restored_client_t restore, struct
 		info("NOTE: Build identity does not have a '%s' component.\n", comp_name);
 	}
 
-	ftab_write(ftab, &component_data, &component_size);
+	ftab_write(ftab, &component_data, (unsigned int*)&component_size);
 	ftab_free(ftab);
 
 	plist_dict_set_item(response, "FirmwareData", plist_new_data((char *)component_data, (uint64_t)component_size));
@@ -3368,7 +3412,7 @@ static int restore_bootability_send_one(void *ctx, ipsw_archive_t ipsw, const ch
 	debug("DEBUG: BootabilityBundle send m=%07o s=%10ld %s\n", stat->st_mode, (long)stat->st_size, subpath);
 
 	unsigned char *buf = NULL;
-	unsigned int size = 0;
+	size_t size = 0;
 
 	if ((S_ISLNK(stat->st_mode) || S_ISREG(stat->st_mode)) && stat->st_size != 0) {
 		ipsw_extract_to_memory(ipsw, name, &buf, &size);
@@ -3519,7 +3563,7 @@ static char* extract_global_manifest_path(plist_t build_identity, char *variant)
 	return ticket_path;
 }
 
-int extract_global_manifest(struct idevicerestore_client_t* client, plist_t build_identity, char *variant, unsigned char** pbuffer, unsigned int* psize)
+int extract_global_manifest(struct idevicerestore_client_t* client, plist_t build_identity, char *variant, unsigned char** pbuffer, size_t* psize)
 {
 	char* ticket_path = extract_global_manifest_path(build_identity, variant);
 	if (!ticket_path) {
@@ -3591,7 +3635,7 @@ int restore_send_personalized_boot_object_v3(restored_client_t restore, struct i
 	}
 
 	char *component = image_name;
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char *data = NULL;
 	char *path = NULL;
 	plist_t blob = NULL;
@@ -3638,7 +3682,7 @@ int restore_send_personalized_boot_object_v3(restored_client_t restore, struct i
 
 		// Extract component
 		unsigned char *component_data = NULL;
-		unsigned int component_size = 0;
+		size_t component_size = 0;
 		int ret = extract_component(client->ipsw, path, &component_data, &component_size);
 		free(path);
 		path = NULL;
@@ -3704,7 +3748,7 @@ int restore_send_source_boot_object_v4(restored_client_t restore, struct idevice
 	char *component = image_name;
 	// Fork from restore_send_component
 	//
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char *data = NULL;
 	char *path = NULL;
 	plist_t blob = NULL;
@@ -3775,11 +3819,11 @@ int restore_send_source_boot_object_v4(restored_client_t restore, struct idevice
 
 int restore_send_restore_local_policy(restored_client_t restore, struct idevicerestore_client_t* client, plist_t msg)
 {
-	unsigned int size = 0;
+	size_t size = 0;
 	unsigned char* data = NULL;
 
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 
 	char* component = "Ap,LocalPolicy";
 
@@ -3960,8 +4004,8 @@ int restore_handle_data_request_msg(struct idevicerestore_client_t* client, idev
 			}
 		}
 
-		else if (!strcmp(type, "BasebandData")) {
-			if(restore_send_baseband_data(restore, client, build_identity, message) < 0) {
+		else if (!strcmp(type, "BasebandData") || !strcmp(type, "BasebandBootData") || !strcmp(type, "BasebandStackData")) {
+			if(restore_send_baseband_data(restore, client, build_identity, message, type) < 0) {
 				error("ERROR: Unable to send baseband data\n");
 				return -1;
 			}

@@ -29,7 +29,7 @@ extern "C" {
 #endif
 
 #ifdef HAVE_CONFIG_H
-#include <config.h>
+#include "config.h"
 #endif
 
 #include <inttypes.h>
@@ -39,7 +39,7 @@ extern "C" {
 #include <libirecovery.h>
 #include <libimobiledevice-glue/thread.h>
 
-#include "idevicerestore.h"
+#include <idevicerestore/idevicerestore.h>
 
 #define _MODE_UNKNOWN         0
 #define _MODE_WTF             1
@@ -132,6 +132,11 @@ struct idevicerestore_client_t {
 	char* restore_variant;
 	char* filesystem;
 	int delete_fs;
+
+	void *user_cb_data;
+	int (*restore_custom_component_function)(struct idevicerestore_client_t* client, const char* name, unsigned char**data, size_t *dataSize);
+	char *bbfwpath;
+	plist_t bbfw_buildidentity;
 };
 
 extern struct idevicerestore_mode_t idevicerestore_modes[];

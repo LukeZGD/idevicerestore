@@ -22,9 +22,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "common.h"
-#include "img4.h"
-#include "tss.h"
+#include <idevicerestore/common.h>
+#include <idevicerestore/img4.h>
+#include <idevicerestore/tss.h>
 
 #define ASN1_PRIVATE 0xc0
 #define ASN1_PRIMITIVE_TAG 0x1f
@@ -58,7 +58,7 @@ static void asn1_write_int_value(unsigned char **p, uint64_t value, int size)
 	*p += value_size;
 }
 
-static void asn1_write_size(unsigned int size, unsigned char** data, unsigned int *data_size)
+static void asn1_write_size(size_t size, unsigned char** data, unsigned int *data_size)
 {
 	unsigned int off = 0;
 
@@ -94,7 +94,7 @@ static void asn1_write_size(unsigned int size, unsigned char** data, unsigned in
 	*data_size += off;
 }
 
-static void asn1_write_element_header(unsigned char type, unsigned int size, unsigned char** data, unsigned int *data_size)
+static void asn1_write_element_header(unsigned char type, size_t size, unsigned char** data, unsigned int *data_size)
 {
 	unsigned int off = 0;
 
@@ -110,7 +110,7 @@ static void asn1_write_element_header(unsigned char type, unsigned int size, uns
 	*data_size += off;
 }
 
-static unsigned char* asn1_create_element_header(unsigned char type, unsigned int size, unsigned char** data, unsigned int *data_size)
+static unsigned char* asn1_create_element_header(unsigned char type, size_t size, unsigned char** data, unsigned int *data_size)
 {
 	unsigned char buf[6];
 	unsigned int off = 0;
@@ -394,7 +394,7 @@ static const char *_img4_get_component_tag(const char *compname)
 	return NULL;
 }
 
-int img4_stitch_component(const char* component_name, const unsigned char* component_data, unsigned int component_size, plist_t tss_response, unsigned char** img4_data, unsigned int *img4_size)
+int img4_stitch_component(const char* component_name, const unsigned char* component_data, size_t component_size, plist_t tss_response, unsigned char** img4_data, unsigned int *img4_size)
 {
 	unsigned char* magic_header = NULL;
 	unsigned int magic_header_size = 0;

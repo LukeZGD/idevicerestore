@@ -21,8 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "fls.h"
-#include "common.h"
+#include <idevicerestore/fls.h>
+#include <idevicerestore/common.h>
 
 #ifndef offsetof
 #define offsetof(type, member)  __builtin_offsetof (type, member)
@@ -101,7 +101,7 @@ static void fls_parse_elements(fls_file* fls)
 	}
 }
 
-fls_file* fls_parse(unsigned char* data, unsigned int size)
+fls_file* fls_parse(unsigned char* data, size_t size)
 {
 	fls_file* fls = (fls_file*)malloc(sizeof(fls_file));
 	if (!fls) {
@@ -132,7 +132,7 @@ void fls_free(fls_file* fls)
 	}
 }
 
-int fls_update_sig_blob(fls_file* fls, const unsigned char* sigdata, unsigned int siglen)
+int fls_update_sig_blob(fls_file* fls, const unsigned char* sigdata, size_t siglen)
 {
 	/* FIXME: the code in this function is not big endian safe */
 	if (!fls || !fls->num_elements) {
@@ -239,7 +239,7 @@ int fls_update_sig_blob(fls_file* fls, const unsigned char* sigdata, unsigned in
 	return 0;
 }
 
-int fls_insert_ticket(fls_file* fls, const unsigned char* data, unsigned int size)
+int fls_insert_ticket(fls_file* fls, const unsigned char* data, size_t size)
 {
 	/* FIXME: the code in this function is not big endian safe */
 	if (!fls || !fls->num_elements) {
@@ -335,4 +335,3 @@ int fls_insert_ticket(fls_file* fls, const unsigned char* data, unsigned int siz
 
 	return 0;
 }
-

@@ -39,17 +39,39 @@ AM_PROG_CC_C_O
 LT_INIT
 
 # Checks for libraries.
-PKG_CHECK_MODULES(libirecovery, libirecovery-1.0 >= $LIBIRECOVERY_VERSION)
-PKG_CHECK_MODULES(libimobiledevice, libimobiledevice-1.0 >= $LIBIMOBILEDEVICE_VERSION)
-PKG_CHECK_MODULES(libusbmuxd, libusbmuxd-2.0 >= $LIBUSBMUXD_VERSION)
-PKG_CHECK_MODULES(libplist, libplist-2.0 >= $LIBPLIST_VERSION)
-PKG_CHECK_MODULES(limd_glue, libimobiledevice-glue-1.0 >= $LIMD_GLUE_VERSION)
-PKG_CHECK_MODULES(libzip, libzip >= $LIBZIP_VERSION)
-PKG_CHECK_MODULES(libcurl, libcurl >= $LIBCURL_VERSION)
-PKG_CHECK_MODULES(zlib, zlib)
+LIBIRECOVERY_REQUIRES_STR="libirecovery-1.0 >= $LIBIRECOVERY_VERSION"
+LIBIMOBILEDEVICE_REQUIRES_STR="libimobiledevice-1.0 >= $LIBIMOBILEDEVICE_VERSION"
+LIBUSBMUXD_REQUIRES_STR="libusbmuxd-2.0 >= $LIBUSBMUXD_VERSION"
+LIBPLIST_REQUIRES_STR="libplist-2.0 >= $LIBPLIST_VERSION"
+LIMD_GLUE_REQUIRES_STR="libimobiledevice-glue-1.0 >= $LIMD_GLUE_VERSION"
+LIBZIP_REQUIRES_STR="libzip >= $LIBZIP_VERSION"
+LIBCURL_REQUIRES_STR="libcurl >= $LIBCURL_VERSION"
+ZLIB_REQUIRES_STR="zlib"
+OPENSSL_REQUIRES_STR="openssl >= $OPENSSL_VERSION"
+
+PKG_CHECK_MODULES(libirecovery, $LIBIRECOVERY_REQUIRES_STR)
+PKG_CHECK_MODULES(libimobiledevice, $LIBIMOBILEDEVICE_REQUIRES_STR)
+PKG_CHECK_MODULES(libusbmuxd, $LIBUSBMUXD_REQUIRES_STR)
+PKG_CHECK_MODULES(libplist, $LIBPLIST_REQUIRES_STR)
+PKG_CHECK_MODULES(limd_glue, $LIMD_GLUE_REQUIRES_STR)
+PKG_CHECK_MODULES(libzip, $LIBZIP_REQUIRES_STR)
+PKG_CHECK_MODULES(libcurl, $LIBCURL_REQUIRES_STR)
+PKG_CHECK_MODULES(zlib, $ZLIB_REQUIRES_STR)
 
 # optional
-PKG_CHECK_MODULES(openssl, openssl >= $OPENSSL_VERSION, have_openssl=yes, have_openssl=no)
+PKG_CHECK_MODULES(openssl, $OPENSSL_REQUIRES_STR, have_openssl=yes, have_openssl=no)
+
+AC_SUBST([libirecovery_requires], [$LIBIRECOVERY_REQUIRES_STR])
+AC_SUBST([libimobiledevice_requires], [$LIBIMOBILEDEVICE_REQUIRES_STR])
+AC_SUBST([libusbmuxd_requires], [$LIBUSBMUXD_REQUIRES_STR])
+AC_SUBST([libplist_requires], [$LIBPLIST_REQUIRES_STR])
+AC_SUBST([limd_glue_requires], [$LIMD_GLUE_REQUIRES_STR])
+AC_SUBST([libzip_requires], [$LIBZIP_REQUIRES_STR])
+AC_SUBST([libcurl_requires], [$LIBCURL_REQUIRES_STR])
+AC_SUBST([zlib_requires], [$ZLIB_REQUIRES_STR])
+
+AC_SUBST([release_version], [$VERSION])
+
 
 AC_CHECK_FUNCS([strsep strcspn mkstemp realpath])
 if test x$ac_cv_func_strsep != xyes; then
@@ -153,6 +175,18 @@ fi
 
 CFLAGS="$CACHED_CFLAGS"
 
+AC_ARG_ENABLE([asan],
+            [AS_HELP_STRING([--enable-asan],
+            [enable ASAN build(default is no)])],
+            [asan_build=true],
+            [asan_build=false])
+
+if test "$asan_build" = true; then
+  echo "*** Note: debug build requested ***"
+  CFLAGS+=" -g -O0 -fsanitize=address -fno-omit-frame-pointer -fsanitize-address-use-after-scope"
+  CXXFLAGS+=" -g -O0 -fsanitize=address -fno-omit-frame-pointer -fsanitize-address-use-after-scope"
+fi
+
 AC_ARG_WITH([openssl],
             [AS_HELP_STRING([--without-openssl],
             [Do not use OpenSSL])],
@@ -173,6 +207,7 @@ if test "x$use_openssl" != "xyes"; then
 fi
 if test "x$have_openssl" == "xyes"; then
   AC_DEFINE(HAVE_OPENSSL, [1], [Define if you have OpenSSL])
+  AC_SUBST([openssl_requires], [$OPENSSL_REQUIRES_STR])
 fi
 AC_SUBST(openssl_CFLAGS)
 AC_SUBST(openssl_LIBS)
@@ -192,6 +227,8 @@ AC_CONFIG_FILES([
 Makefile
 src/Makefile
 docs/Makefile
+include/Makefile
+libidevicerestore.pc
 ])
 AC_OUTPUT
 

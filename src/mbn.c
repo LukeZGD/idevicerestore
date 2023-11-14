@@ -22,10 +22,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "mbn.h"
-#include "common.h"
+#include <idevicerestore/mbn.h>
+#include <idevicerestore/common.h>
 
-mbn_file* mbn_parse(unsigned char* data, unsigned int size)
+mbn_file* mbn_parse(unsigned char* data, size_t size)
 {
 	mbn_file* mbn = (mbn_file*)malloc(sizeof(mbn_file));
 	if (!mbn) {
@@ -72,7 +72,7 @@ void mbn_free(mbn_file* mbn)
 	}
 }
 
-int mbn_update_sig_blob(mbn_file* mbn, const unsigned char* sigdata, unsigned int siglen)
+int mbn_update_sig_blob(mbn_file* mbn, const unsigned char* sigdata, size_t siglen)
 {
 	if (!mbn) {
 		error("ERROR: %s: no data\n", __func__);
@@ -88,4 +88,3 @@ int mbn_update_sig_blob(mbn_file* mbn, const unsigned char* sigdata, unsigned in
 
 	return 0;
 }
-

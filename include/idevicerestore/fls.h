@@ -77,9 +77,9 @@ typedef struct {
 	uint32_t size;
 } fls_file;
 
-fls_file* fls_parse(unsigned char* data, unsigned int size);
+fls_file* fls_parse(unsigned char* data, size_t size);
 void fls_free(fls_file* fls);
-int fls_update_sig_blob(fls_file* fls, const unsigned char* data, unsigned int size);
-int fls_insert_ticket(fls_file* fls, const unsigned char* data, unsigned int size);
+int fls_update_sig_blob(fls_file* fls, const unsigned char* data, size_t size);
+int fls_insert_ticket(fls_file* fls, const unsigned char* data, size_t size);
 
 #endif

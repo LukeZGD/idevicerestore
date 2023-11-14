@@ -28,17 +28,17 @@
 #include <curl/curl.h>
 #include <plist/plist.h>
 
-#include "tss.h"
-#include "img3.h"
-#include "common.h"
-#include "idevicerestore.h"
+#include <idevicerestore/tss.h>
+#include <idevicerestore/img3.h>
+#include <idevicerestore/common.h>
+#include <idevicerestore/idevicerestore.h>
 
-#include "endianness.h"
+#include <idevicerestore/endianness.h>
 
 #define AUTH_VERSION "914.120.2"
 
 #ifdef WIN32
-#define TSS_CLIENT_VERSION_STRING "libauthinstall_Win-"AUTH_VERSION"" 
+#define TSS_CLIENT_VERSION_STRING "libauthinstall_Win-"AUTH_VERSION""
 #else
 #define TSS_CLIENT_VERSION_STRING "libauthinstall-"AUTH_VERSION""
 #endif
@@ -1508,7 +1508,7 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 	int status_code = -1;
 	int retry = 0;
 	int max_retries = 15;
-	unsigned int size = 0;
+	size_t size = 0;
 	char curl_error_message[CURL_ERROR_SIZE];
 
 	const char* urls[6] = {
@@ -1520,7 +1520,7 @@ plist_t tss_request_send(plist_t tss_request, const char* server_url_string)
 		"http://17.151.36.30/TSS/controller?action=2"
 	};
 
-	plist_to_xml(tss_request, &request, &size);
+	plist_to_xml(tss_request, &request, (unsigned int*)&size);
 
 	tss_response* response = NULL;
 	memset(curl_error_message, '\0', CURL_ERROR_SIZE);

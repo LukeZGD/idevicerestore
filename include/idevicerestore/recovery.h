@@ -32,7 +32,7 @@ extern "C" {
 #include <plist/plist.h>
 #include <libirecovery.h>
 
-#include "common.h"
+#include <idevicerestore/common.h>
 
 struct recovery_client_t {
 	irecv_client_t client;
@@ -42,6 +42,7 @@ struct recovery_client_t {
 
 int recovery_client_new(struct idevicerestore_client_t* client);
 void recovery_client_free(struct idevicerestore_client_t* client);
+irecv_device_t recovery_get_irecv_device(struct idevicerestore_client_t* client);
 int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build_identity);
 int recovery_send_component(struct idevicerestore_client_t* client, plist_t build_identity, const char* component);
 int recovery_send_component_and_command(struct idevicerestore_client_t* client, plist_t build_identity, const char* component, const char* command);
@@ -57,6 +58,8 @@ int recovery_set_autoboot(struct idevicerestore_client_t* client, int enable);
 int recovery_is_image4_supported(struct idevicerestore_client_t* client);
 int recovery_get_ap_nonce(struct idevicerestore_client_t* client, unsigned char** nonce, int* nonce_size);
 int recovery_get_sep_nonce(struct idevicerestore_client_t* client, unsigned char** nonce, int* nonce_size);
+int recovery_get_cpid(struct idevicerestore_client_t* client, unsigned int* cpid);
+int recovery_get_bdid(struct idevicerestore_client_t* client, unsigned int* bdid);
 
 
 #ifdef __cplusplus

@@ -31,9 +31,9 @@
 #include <libimobiledevice/preboard.h>
 #include <usbmuxd.h>
 
-#include "common.h"
-#include "normal.h"
-#include "recovery.h"
+#include <idevicerestore/common.h>
+#include <idevicerestore/normal.h>
+#include <idevicerestore/recovery.h>
 
 static int normal_idevice_new(struct idevicerestore_client_t* client, idevice_t* device)
 {

@@ -31,6 +31,7 @@ extern "C" {
 #include <stdint.h>
 #include <plist/plist.h>
 #include <sys/stat.h>
+#include <stdint.h>
 
 struct ipsw_archive {
 	struct zip* zip;
@@ -68,7 +69,7 @@ int ipsw_file_exists(ipsw_archive_t ipsw, const char* infile);
 int ipsw_get_file_size(ipsw_archive_t ipsw, const char* infile, uint64_t* size);
 int ipsw_extract_to_file(ipsw_archive_t ipsw, const char* infile, const char* outfile);
 int ipsw_extract_to_file_with_progress(ipsw_archive_t ipsw, const char* infile, const char* outfile, int print_progress);
-int ipsw_extract_to_memory(ipsw_archive_t ipsw, const char* infile, unsigned char** pbuffer, unsigned int* psize);
+int ipsw_extract_to_memory(ipsw_archive_t ipsw, const char* infile, unsigned char** pbuffer, size_t* psize);
 int ipsw_extract_send(ipsw_archive_t ipsw, const char* infile, int blocksize, ipsw_send_cb send_callback, void* ctx);
 int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int *tss_enabled);
 int ipsw_extract_restore_plist(ipsw_archive_t ipsw, plist_t* restore_plist);

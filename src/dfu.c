@@ -27,11 +27,11 @@
 #include <unistd.h>
 #include <libirecovery.h>
 
-#include "dfu.h"
-#include "tss.h"
-#include "recovery.h"
-#include "idevicerestore.h"
-#include "common.h"
+#include <idevicerestore/dfu.h>
+#include <idevicerestore/tss.h>
+#include <idevicerestore/recovery.h>
+#include <idevicerestore/idevicerestore.h>
+#include <idevicerestore/common.h>
 
 static int dfu_progress_callback(irecv_client_t client, const irecv_event_t* event) {
 	if (event->type == IRECV_PROGRESS) {
@@ -103,7 +103,7 @@ irecv_device_t dfu_get_irecv_device(struct idevicerestore_client_t* client)
 	return device;
 }
 
-int dfu_send_buffer(struct idevicerestore_client_t* client, unsigned char* buffer, unsigned int size)
+int dfu_send_buffer(struct idevicerestore_client_t* client, unsigned char* buffer, size_t size)
 {
 	irecv_error_t err = 0;
 
@@ -129,7 +129,7 @@ int dfu_send_component(struct idevicerestore_client_t* client, plist_t build_ide
 	}
 
 	unsigned char* component_data = NULL;
-	unsigned int component_size = 0;
+	size_t component_size = 0;
 
 	if (strcmp(component, "Ap,LocalPolicy") == 0) {
 		// If Ap,LocalPolicy => Inject an empty policy
@@ -160,7 +160,7 @@ int dfu_send_component(struct idevicerestore_client_t* client, plist_t build_ide
 	}
 
 	unsigned char* data = NULL;
-	uint32_t size = 0;
+	size_t size = 0;
 
 	if (personalize_component(component, component_data, component_size, tss, &data, &size) < 0) {
 		error("ERROR: Unable to get personalized component: %s\n", component);
@@ -218,6 +218,24 @@ int dfu_get_cpid(struct idevicerestore_client_t* client, unsigned int* cpid)
 	}
 
 	*cpid = device_info->cpid;
+
+	return 0;
+}
+
+int dfu_get_bdid(struct idevicerestore_client_t* client, unsigned int* bdid)
+{
+	if(client->dfu == NULL) {
+		if (dfu_client_new(client) < 0) {
+			return -1;
+		}
+	}
+
+	const struct irecv_device_info *device_info = irecv_get_device_info(client->dfu->client);
+	if (!device_info) {
+		return -1;
+	}
+
+	*bdid = device_info->bdid;
 
 	return 0;
 }
@@ -376,7 +394,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	irecv_get_mode(client->dfu->client, &mode);
 
-	if (mode != IRECV_K_DFU_MODE) {
+	if (mode != IRECV_K_DFU_MODE && mode != IRECV_K_WTF_MODE) {
 		info("NOTE: device is not in DFU mode, assuming recovery mode.\n");
 		client->mode = MODE_RECOVERY;
 		return 0;
@@ -579,7 +597,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 		return -1;
 	}
 	debug("Waiting for device to reconnect in recovery mode...\n");
-	cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+	cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 120000);
 	if (client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
 		mutex_unlock(&client->device_event_mutex);
 		if (!(client->flags & FLAG_QUIT)) {
@@ -600,4 +618,3 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	return 0;
 }
-
