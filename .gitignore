@@ -8,7 +8,6 @@
 *.lo
 *.la
 autom4te.cache/*
-*.in
 */.deps/*
 m4/*
 swig/*
@@ -17,6 +16,7 @@ swig/*
 *.diff
 aclocal.m4
 config.h
+config.h.in
 config.log
 config.sub
 config.guess
@@ -31,6 +31,7 @@ missing
 mkinstalldirs
 libtool
 *Makefile
+*Makefile.in
 py-compile
 stamp-h1
 src/.libs
