@@ -38,3 +38,4 @@ src/.libs
 src/idevicerestore
 src/idevicerestore.exe
 libidevicerestore.pc
+.vscode
