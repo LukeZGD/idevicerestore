@@ -803,13 +803,39 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			plist_dict_set_item(comp, "Info", inf);
 			plist_dict_set_item(manifest, "iBSS", comp);
 
-			// add iBEC
+			// add iBEC			
 			sprintf(tmpstr, "Firmware/dfu/iBEC.%s.%s.dfu", lcmodel, "RELEASE");
 			inf = plist_new_dict();
-			plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
-			comp = plist_new_dict();
-			plist_dict_set_item(comp, "Info", inf);
-			plist_dict_set_item(manifest, "iBEC", comp);
+			if (ipsw_file_exists(client->ipsw, tmpstr)){
+				/*
+					iOS 1.0 doesn't actually have iBEC
+				*/
+				plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
+				comp = plist_new_dict();
+				plist_dict_set_item(comp, "Info", inf);
+				plist_dict_set_item(manifest, "iBEC", comp);
+			}
+
+			//add logo
+			{
+				const char *logopath = NULL;
+				snprintf(tmpstr,sizeof(tmpstr), "Firmware/all_flash/all_flash.%s.production/applelogo.img2",lcmodel);
+				if (ipsw_file_exists(client->ipsw,tmpstr)){
+					logopath = tmpstr;
+				}else{
+					snprintf(tmpstr,sizeof(tmpstr), "Firmware/all_flash/all_flash.%s.production/applelogo.s5l8900x.img3",lcmodel);
+					if (ipsw_file_exists(client->ipsw,tmpstr)){
+						logopath = tmpstr;
+					}
+				}
+				if (logopath){
+					inf = plist_new_dict();
+					plist_dict_set_item(inf, "Path", plist_new_string(logopath));
+					comp = plist_new_dict();
+					plist_dict_set_item(comp, "Info", inf);
+					plist_dict_set_item(manifest, "RestoreLogo", comp);
+				}
+			}
 
 			//add logo
 			{
@@ -1289,12 +1315,19 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			}
 		}
 
-		mutex_lock(&client->device_event_mutex);
-
 		/* now we load the iBEC */
-		if (recovery_send_ibec(client, build_identity) < 0) {
+		if (recovery_send_ibec_nogo(client, build_identity) < 0) {
 			mutex_unlock(&client->device_event_mutex);
 			error("ERROR: Unable to send iBEC\n");
+			return -2;
+		}
+
+		mutex_lock(&client->device_event_mutex);
+
+		/* now we run the iBEC */
+		if (recovery_run_go(client) < 0) {
+			mutex_unlock(&client->device_event_mutex);
+			error("ERROR: Unable to run iBEC\n");
 			return -2;
 		}
 		recovery_client_free(client);

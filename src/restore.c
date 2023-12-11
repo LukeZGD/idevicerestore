@@ -204,29 +204,53 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 		if (client->ecid != 0) {
 			plist_t node = NULL;
 			plist_t hwinfo = NULL;
+			uint64_t this_cpid = (uint64_t)-1;
+			uint64_t this_bdid = (uint64_t)-1;
+			uint64_t this_ecid = (uint64_t)-1;
 
 			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
-				continue;
-			}
-
-			node = plist_dict_get_item(hwinfo, "UniqueChipID");
-			if (!node || plist_get_node_type(node) != PLIST_UINT) {
-				if (hwinfo) {
-					plist_free(hwinfo);
+				if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+					/*
+						This info isn't available pre-iOS 3, so whatever
+						Just don't restore multiple pre-iOS 3 devices at once ;)
+					*/
+					goto found_device;
 				}
 				continue;
 			}
-			restored_client_free(restore);
-			restore = NULL;
 
-			uint64_t this_ecid = 0;
-			plist_get_uint_val(node, &this_ecid);
-			plist_free(hwinfo);
+			node = plist_dict_get_item(hwinfo, "ChipID");
+			if (node && plist_get_node_type(node) == PLIST_UINT) {
+				plist_get_uint_val(node, &this_cpid);
+			}
+
+			node = plist_dict_get_item(hwinfo, "BoardID");
+			if (node && plist_get_node_type(node) == PLIST_UINT) {
+				plist_get_uint_val(node, &this_bdid);
+			}
+
+			node = plist_dict_get_item(hwinfo, "UniqueChipID");
+			if (node && plist_get_node_type(node) == PLIST_UINT) {
+				plist_get_uint_val(node, &this_ecid);
+			}
+
+			if (hwinfo) {
+				plist_free(hwinfo);
+			}
 
 			if (this_ecid != client->ecid) {
-				continue;
+				if (!client->version || (client->version[0] != '1' && client->version[0] != '2')) continue;
+				/*
+					UniqueChipID isn't available pre-iOS 3, so whatever
+					Just don't restore multiple pre-iOS 3 devices at once ;)
+
+					On iOS 2.1 0x8720 we do get CPID and BDID, so let's at least verify that
+				*/
+				if (this_cpid != -1 && this_cpid != client->device->chip_id) continue;
+				if (this_bdid != -1 && this_bdid != client->device->board_id) continue;
 			}
 		}
+	found_device:
 		if (restore) {
 			restored_client_free(restore);
 			restore = NULL;
@@ -424,21 +448,54 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		restored_client_free(restored);
 		idevice_free(device);
 		plist_free(hwinfo);
+		if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+			/*
+				This info isn't available pre-iOS 3, so whatever
+				Just don't restore multiple pre-iOS 3 devices at once ;)
+			*/
+			debug("%s: pre-iOS 3 restore detected, continuing restore without ecid check!", __func__);
+			return 1;
+		}
 		return 0;
 	}
 	restored_client_free(restored);
 	idevice_free(device);
 
-	uint64_t this_ecid = 0;
-	plist_t node = plist_dict_get_item(hwinfo, "UniqueChipID");
+	uint64_t this_cpid = (uint64_t)-1;
+	uint64_t this_bdid = (uint64_t)-1;
+	uint64_t this_ecid = (uint64_t)-1;
+	plist_t node = NULL;
+
+	node = plist_dict_get_item(hwinfo, "ChipID");
+	if (node && plist_get_node_type(node) == PLIST_UINT) {
+		plist_get_uint_val(node, &this_cpid);
+	}
+
+	node = plist_dict_get_item(hwinfo, "BoardID");
+	if (node && plist_get_node_type(node) == PLIST_UINT) {
+		plist_get_uint_val(node, &this_bdid);
+	}
+
+	node = plist_dict_get_item(hwinfo, "UniqueChipID");
 	if (node && plist_get_node_type(node) == PLIST_UINT) {
 		plist_get_uint_val(node, &this_ecid);
 	}
-	plist_free(hwinfo);
 
-	if (this_ecid == 0) {
+	plist_free(hwinfo); hwinfo = NULL;
+
+	if (this_ecid == -1) {
 		error("ERROR: %s: Unable to get ECID from restored\n", __func__);
-		return 0;
+		if (!client->version || (client->version[0] != '1' && client->version[0] != '2')) return 0;
+		/*
+			UniqueChipID isn't available pre-iOS 3, so whatever
+			Just don't restore multiple pre-iOS 3 devices at once ;)
+
+			On iOS 2.1 0x8720 we do get CPID and BDID, so let's at least verify that
+		*/
+		if (this_cpid != -1 && this_cpid != client->device->chip_id)  return 0;
+		if (this_bdid != -1 && this_bdid != client->device->board_id)  return 0;
+		debug("%s: pre-iOS 3 restore detected, continuing restore without ecid check!", __func__);
+		return 1;
 	}
 
 	return (this_ecid == client->ecid);
