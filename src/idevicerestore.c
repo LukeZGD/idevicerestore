@@ -2865,6 +2865,7 @@ const char* get_component_name(const char* filename)
 		{ "batterylow1", 11, "BatteryLow1" },
 		{ "glyphcharging", 13, "BatteryCharging" },
 		{ "glyphplugin", 11, "BatteryPlugin" },
+		{ "batterycharging", 15, "BatteryCharging" },
 		{ "batterycharging0", 16, "BatteryCharging0" },
 		{ "batterycharging1", 16, "BatteryCharging1" },
 		{ "batteryfull", 11, "BatteryFull" },
