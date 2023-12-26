@@ -1262,20 +1262,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		// if the device is in DFU mode, place it into recovery mode
 		dfu_client_free(client);
 		recovery_client_free(client);
-		if ((client->flags & FLAG_CUSTOM) && limera1n_is_supported(client->device)) {
-			info("connecting to DFU\n");
-			if (dfu_client_new(client) < 0) {
-				return -1;
-			}
-			info("exploiting with limera1n\n");
-			if (limera1n_exploit(client->device, &client->dfu->client) != 0) {
-				error("ERROR: limera1n exploit failed\n");
-				dfu_client_free(client);
-				return -1;
-			}
-			dfu_client_free(client);
-			info("exploited\n");
-		}
 		if (dfu_enter_recovery(client, build_identity) < 0) {
 			error("ERROR: Unable to place device into recovery mode from DFU mode\n");
 			if (client->tss)

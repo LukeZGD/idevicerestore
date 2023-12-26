@@ -9,28 +9,20 @@ jobs:
       - name: Run compile script
         run: ./compile.sh
 
-      - name: Move idevicerestore binary
-        run: mv ./bin/idevicerestore_linux .
-
-      - name: Zip idevicerestore
-        run: zip -r idevicerestore_linux.zip idevicerestore_linux
-
       - uses: actions/upload-artifact@v3
         with:
-          files: idevicerestore_linux.zip
+          files: idevicerestore_linux
+          path: bin/
 
   linux-limd:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v3
 
       - name: Run compile script
         run: ./compile.sh limd
 
-      - name: Zip libimobiledevice
-        run: zip -r libimobiledevice_linux.zip bin/libimobiledevice/
-
       - uses: actions/upload-artifact@v3
         with:
-          files: libimobiledevice_linux.zip
-
+          files: libimobiledevice_linux
+          path: bin/
