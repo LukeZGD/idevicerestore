@@ -355,13 +355,39 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			plist_dict_set_item(comp, "Info", inf);
 			plist_dict_set_item(manifest, "iBSS", comp);
 
-			// add iBEC
+			// add iBEC			
 			sprintf(tmpstr, "Firmware/dfu/iBEC.%s.%s.dfu", lcmodel, "RELEASE");
 			inf = plist_new_dict();
-			plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
-			comp = plist_new_dict();
-			plist_dict_set_item(comp, "Info", inf);
-			plist_dict_set_item(manifest, "iBEC", comp);
+			if (ipsw_file_exists(client->ipsw, tmpstr)){
+				/*
+					iOS 1.0 doesn't actually have iBEC
+				*/
+				plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
+				comp = plist_new_dict();
+				plist_dict_set_item(comp, "Info", inf);
+				plist_dict_set_item(manifest, "iBEC", comp);
+			}
+
+			//add logo
+			{
+				const char *logopath = NULL;
+				snprintf(tmpstr,sizeof(tmpstr), "Firmware/all_flash/all_flash.%s.production/applelogo.img2",lcmodel);
+				if (ipsw_file_exists(client->ipsw,tmpstr)){
+					logopath = tmpstr;
+				}else{
+					snprintf(tmpstr,sizeof(tmpstr), "Firmware/all_flash/all_flash.%s.production/applelogo.s5l8900x.img3",lcmodel);
+					if (ipsw_file_exists(client->ipsw,tmpstr)){
+						logopath = tmpstr;
+					}
+				}
+				if (logopath){
+					inf = plist_new_dict();
+					plist_dict_set_item(inf, "Path", plist_new_string(logopath));
+					comp = plist_new_dict();
+					plist_dict_set_item(comp, "Info", inf);
+					plist_dict_set_item(manifest, "RestoreLogo", comp);
+				}
+			}
 
 			// add kernel cache
 			plist_t kdict = NULL;

@@ -66,10 +66,12 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Cloning git repos and other deps"
     git clone https://github.com/lzfse/lzfse
     git clone https://github.com/libimobiledevice/libplist
-    git clone https://github.com/libimobiledevice/libusbmuxd
-    git clone https://github.com/libimobiledevice/libimobiledevice
-    git clone https://github.com/libimobiledevice/libirecovery
+    git clone https://github.com/libimobiledevice/libimobiledevice-glue
+    git clone https://github.com/LukeeGD/libusbmuxd
+    git clone https://github.com/LukeeGD/libimobiledevice
+    git clone https://github.com/LukeeGD/libirecovery
     git clone https://github.com/libimobiledevice/libideviceactivation
+    git clone https://github.com/libimobiledevice/ideviceinstaller
     git clone https://github.com/nih-at/libzip
     #aria2c https://www.openssl.org/source/openssl-$sslver.tar.gz
     aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -102,8 +104,13 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libplist..."
     cd $FR_BASE
     cd libplist
-    git reset --hard 787a449
-    git clean -fxd
+    ./autogen.sh $CONF_ARGS $CC_ARGS
+    make $JNUM
+    make $JNUM install
+
+    echo "Building libimobiledevice-glue..."
+    cd $FR_BASE
+    cd libimobiledevice-glue
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
     make $JNUM install
@@ -111,8 +118,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libusbmuxd..."
     cd $FR_BASE
     cd libusbmuxd
-    git reset --hard 3eb50a0
-    git clean -fxd
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
     make $JNUM install
@@ -120,8 +125,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libimobiledevice..."
     cd $FR_BASE
     cd libimobiledevice
-    git reset --hard ca32415
-    git clean -fxd
     ./autogen.sh $CONF_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
     make $JNUM
     make $JNUM install
@@ -129,15 +132,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libirecovery..."
     cd $FR_BASE
     cd libirecovery
-    git reset --hard 4793494
-    git clean -fxd
-    ./autogen.sh $CONF_ARGS $CC_ARGS
-    make $JNUM
-    make $JNUM install
-
-    echo "Building libideviceactivation..."
-    cd $FR_BASE
-    cd libideviceactivation
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
     make $JNUM install
@@ -150,20 +144,34 @@ if [[ $OSTYPE == "linux"* ]]; then
     make $JNUM
     make $JNUM install
 
-    if [[ $1 == "limd" ]]; then
-        cd $FR_BASE
-        cd ..
-        mkdir bin/libimobiledevice
-        cp /usr/local/bin/i* bin/libimobiledevice/
-        exit
-    fi
-
     echo "Building libbz2..."
     cd $FR_BASE
     tar -zxvf bzip2-1.0.8.tar.gz
     cd bzip2-1.0.8
     make $JNUM
     make $JNUM install
+
+    if [[ $1 == "limd" ]]; then
+        echo "Building libideviceactivation..."
+        cd $FR_BASE
+        cd libideviceactivation
+        ./autogen.sh $CONF_ARGS $CC_ARGS
+        make $JNUM
+        make $JNUM install
+
+        echo "Building ideviceinstaller..."
+        cd $FR_BASE
+        cd ideviceinstaller
+        ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-L/usr/local/lib -lz -ldl"
+        make $JNUM
+        make $JNUM install
+
+        cd $FR_BASE
+        cd ..
+        mkdir bin/libimobiledevice
+        cp /usr/local/bin/i* bin/libimobiledevice/
+        exit
+    fi
 
     echo "Building idevicerestore!"
     cd $FR_BASE

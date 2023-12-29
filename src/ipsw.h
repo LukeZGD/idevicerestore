@@ -45,6 +45,7 @@ int ipsw_extract_to_file_with_progress(const char* ipsw, const char* infile, con
 int ipsw_extract_to_memory(const char* ipsw, const char* infile, unsigned char** pbuffer, unsigned int* psize);
 int ipsw_extract_build_manifest(const char* ipsw, plist_t* buildmanifest, int *tss_enabled);
 int ipsw_extract_restore_plist(const char* ipsw, plist_t* restore_plist);
+int ipsw_file_exists(const char* ipsw, const char* infile);
 void ipsw_free_file(ipsw_file* file);
 
 #ifdef __cplusplus
