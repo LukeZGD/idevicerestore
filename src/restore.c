@@ -1056,6 +1056,11 @@ int restore_send_nor(restored_client_t restore, struct idevicerestore_client_t* 
 	plist_dict_set_item(dict, "LlbImageData", plist_new_data((char*)llb_data, (uint64_t) llb_size));
 	free(llb_data);
 
+	if (client->restore->protocol_version == 7){
+		//iOS 1.0 support
+		plist_dict_set_item(dict,"Operation", plist_new_string("UpdateNOR"));
+	}
+
 	norimage_array = plist_new_array();
 
 	for (i = 0; i < plist_array_get_size(firmware_files); i++) {
@@ -2104,6 +2109,237 @@ int restore_handle_data_request_msg(struct idevicerestore_client_t* client, idev
 	return 0;
 }
 
+static int restore_process_v7_protocol(struct idevicerestore_client_t* client, plist_t message, uint64_t *v7_restore_stage,  plist_t build_identity){
+	int err = 0;
+	restored_client_t restore = NULL;
+	idevice_t device = NULL;
+    plist_t p_response = NULL;
+    plist_t p_status = NULL;
+
+	restore = client->restore->client;
+	device = client->restore->device;
+
+    int64_t complete_status = -1;
+
+#define MAKE_STAGE(stage, num) (stage | (((uint64_t)num) << 55))
+#define GET_STAGE(v) ((v) & ((1LLU<<56)-1))
+#define GET_NUM(v) ((int)((v) >> 55))
+
+    p_response = plist_dict_get_item(message, "Response");
+    if (!p_response || plist_get_node_type(p_response) != PLIST_STRING) {
+        debug("Unknown message received:\n");
+        //if (idevicerestore_debug)
+            debug_plist(message);
+        return 0;
+    }
+
+    if (!plist_string_val_compare(p_response, "Acknowledged")) {
+        if (*v7_restore_stage == RESTORE_IMAGE){
+            if(restore_send_filesystem(client, device, build_identity) < 0) {
+                error("ERROR: Unable to send filesystem\n");
+                err = -2;
+                client->flags |= FLAG_QUIT;
+            }else{
+                info("Verifying filesystem...\n");
+            }
+        }
+        info("%s (%d) ...",restore_progress_string(GET_STAGE(*v7_restore_stage)),GET_NUM(*v7_restore_stage));
+        fflush(stdout);
+        return 0;
+    }else if (!plist_string_val_compare(p_response, "Complete")) {
+
+        p_status = plist_dict_get_item(message, "Status");
+        if (!p_status || plist_get_node_type(p_status) != PLIST_INT) {
+            error("Failed to get Complete status from message:\n");
+            //if (idevicerestore_debug)
+                debug_plist(message);
+        }
+        plist_get_int_val(p_status, &complete_status);
+        info(" done. (status %lld)\n",complete_status);
+    }else{
+        error("Unexpected Response Type: %s\n",plist_get_string_ptr(p_response,NULL));
+    }
+
+    if (complete_status != 0){
+        return -7;
+    }
+
+    plist_t dict = plist_new_dict();
+    switch (*v7_restore_stage) {
+    case MAKE_STAGE(WAIT_FOR_NAND,0):
+        *v7_restore_stage = MAKE_STAGE(CREATE_PARTITION_MAP,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Partition"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(CREATE_PARTITION_MAP,0):
+        *v7_restore_stage = MAKE_STAGE(CREATE_FILESYSTEM,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Erase"));
+        plist_dict_set_item(dict,"VolumeName", plist_new_string("System"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s1"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(CREATE_FILESYSTEM,0):
+        *v7_restore_stage = MAKE_STAGE(CREATE_FILESYSTEM,1);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Erase"));
+        plist_dict_set_item(dict,"VolumeName", plist_new_string("Data"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s2"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(CREATE_FILESYSTEM,1):
+        *v7_restore_stage = MAKE_STAGE(RESTORE_IMAGE,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Restore"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s1"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(RESTORE_IMAGE,0):
+        *v7_restore_stage = MAKE_STAGE(CHECK_FILESYSTEMS,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("FilesystemCheck"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s1"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(CHECK_FILESYSTEMS,0):
+        *v7_restore_stage = MAKE_STAGE(MOUNT_FILESYSTEMS,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Mount"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s1"));
+        plist_dict_set_item(dict,"MountPoint", plist_new_string("/mnt1"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(MOUNT_FILESYSTEMS,0):
+        *v7_restore_stage = MAKE_STAGE(CHECK_FILESYSTEMS,1);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("FilesystemCheck"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s2"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(CHECK_FILESYSTEMS,1):
+        *v7_restore_stage = MAKE_STAGE(MOUNT_FILESYSTEMS,1);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Mount"));
+        plist_dict_set_item(dict,"DeviceName", plist_new_string("/dev/disk0s2"));
+        plist_dict_set_item(dict,"MountPoint", plist_new_string("/mnt2"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(MOUNT_FILESYSTEMS,1):
+        *v7_restore_stage = MAKE_STAGE(FIXUP_VAR,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Ditto"));
+        plist_dict_set_item(dict,"SourcePath", plist_new_string("/mnt1/private/var"));
+        plist_dict_set_item(dict,"DestinationPath", plist_new_string("/mnt2"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(FIXUP_VAR,0):
+        *v7_restore_stage = MAKE_STAGE(FIXUP_VAR,1);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("MakeDirectory"));
+        plist_dict_set_item(dict,"Mode", plist_new_string("750"));
+        plist_dict_set_item(dict,"Path", plist_new_string("/mnt2/root/Media"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(FIXUP_VAR,1):
+        *v7_restore_stage = MAKE_STAGE(FIXUP_VAR,2);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("RemovePath"));
+        plist_dict_set_item(dict,"Path", plist_new_string("/mnt1/private/var"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(FIXUP_VAR,2):
+        *v7_restore_stage = MAKE_STAGE(FIXUP_VAR,3);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("MakeDirectory"));
+        plist_dict_set_item(dict,"Mode", plist_new_string("755"));
+        plist_dict_set_item(dict,"Path", plist_new_string("/mnt1/private/var"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(FIXUP_VAR,3):
+        *v7_restore_stage = MAKE_STAGE(UNMOUNT_FILESYSTEMS,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Unmount"));
+        plist_dict_set_item(dict,"MountPoint", plist_new_string("/mnt1"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(UNMOUNT_FILESYSTEMS,0):
+        *v7_restore_stage = MAKE_STAGE(UNMOUNT_FILESYSTEMS,1);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("Unmount"));
+        plist_dict_set_item(dict,"MountPoint", plist_new_string("/mnt2"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(UNMOUNT_FILESYSTEMS,1):
+        *v7_restore_stage = MAKE_STAGE(FLASH_FIRMWARE,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        err = restore_send_nor(restore, client, build_identity);
+        break;
+
+    case MAKE_STAGE(FLASH_FIRMWARE,0):
+        *v7_restore_stage = MAKE_STAGE(UPDATE_BASEBAND,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("UpdateBaseBand"));
+        plist_dict_set_item(dict,"UpdateBasebandBootloader", plist_new_bool(1));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(UPDATE_BASEBAND,0):
+        *v7_restore_stage = MAKE_STAGE(SET_BOOT_STAGE,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("SetBootStage"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(SET_BOOT_STAGE,0):
+        *v7_restore_stage = MAKE_STAGE(MODIFY_BOOTARGS,0);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("SetNVRam"));
+        plist_dict_set_item(dict,"NVRAMKey", plist_new_string("auto-boot"));
+        plist_dict_set_item(dict,"NVRAMValue", plist_new_string("true"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(MODIFY_BOOTARGS,0):
+        *v7_restore_stage = MAKE_STAGE(MODIFY_BOOTARGS,1);
+        debug("Requesting Stage 0x%llx\n",*v7_restore_stage);
+        plist_dict_set_item(dict,"Operation", plist_new_string("SetNVRam"));
+        plist_dict_set_item(dict,"NVRAMKey", plist_new_string("bootdelay"));
+        plist_dict_set_item(dict,"NVRAMValue", plist_new_string("0"));
+        err = restored_send(restore, dict);
+        break;
+
+    case MAKE_STAGE(MODIFY_BOOTARGS,1):
+        info("Done restoring\n");
+        client->flags |= FLAG_QUIT;
+        break;
+
+    default:
+        error("Restore at unexpected stage %lld (0x%llx)\n",*v7_restore_stage,*v7_restore_stage);
+        err = -7;
+        break;
+    }
+    if (dict){plist_free(dict); dict = NULL;}
+    return err;
+#undef MAKE_STAGE
+#undef GET_STAGE
+#undef GET_NUM
+}
+
 int restore_device(struct idevicerestore_client_t* client, plist_t build_identity, const char* filesystem) {
 	int err = 0;
 	char* type = NULL;
@@ -2114,6 +2350,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	restored_client_t restore = NULL;
 	restored_error_t restore_error = RESTORE_E_SUCCESS;
 	thread_t fdr_thread = NULL;
+	uint64_t v7_restore_stage = WAIT_FOR_NAND;
 
 	restore_finished = 0;
 
@@ -2313,69 +2550,73 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 			client->flags |= FLAG_QUIT;
 		}
 
+		if (message) {plist_free(message);message = NULL;}
 		restore_error = restored_receive(restore, &message);
 		if (restore_error != RESTORE_E_SUCCESS) {
 			debug("No data to read\n");
-			message = NULL;
 			continue;
 		}
 
-		// discover what kind of message has been received
-		node = plist_dict_get_item(message, "MsgType");
-		if (!node || plist_get_node_type(node) != PLIST_STRING) {
-			debug("Unknown message received:\n");
-			//if (idevicerestore_debug)
-				debug_plist(message);
-			plist_free(message);
-			message = NULL;
-			continue;
-		}
-		plist_get_string_val(node, &type);
+		if (client->restore->protocol_version == 7){
+			//iOS 1.0X restores
+            err = restore_process_v7_protocol(client, message, &v7_restore_stage, build_identity);
 
-		// data request messages are sent by restored whenever it requires
-		// files sent to the server by the client. these data requests include
-		// SystemImageData, RootTicket, KernelCache, NORData and BasebandData requests
-		if (!strcmp(type, "DataRequestMsg")) {
-			err = restore_handle_data_request_msg(client, device, restore, message, build_identity, filesystem);
-		}
+        }else{ //iOS 1.1 and everything newer
+			// discover what kind of message has been received
+			node = plist_dict_get_item(message, "MsgType");
+			if (!node || plist_get_node_type(node) != PLIST_STRING) {
+				debug("Unknown message received:\n");
+				//if (idevicerestore_debug)
+					debug_plist(message);
+				plist_free(message);
+				continue;
+			}
+			plist_get_string_val(node, &type);
 
-		// restore logs are available if a previous restore failed
-		else if (!strcmp(type, "PreviousRestoreLogMsg")) {
-			err = restore_handle_previous_restore_log_msg(restore, message);
-		}
+			// data request messages are sent by restored whenever it requires
+			// files sent to the server by the client. these data requests include
+			// SystemImageData, RootTicket, KernelCache, NORData and BasebandData requests
+			if (!strcmp(type, "DataRequestMsg")) {
+				err = restore_handle_data_request_msg(client, device, restore, message, build_identity, filesystem);
+			}
 
-		// progress notification messages sent by the restored inform the client
-		// of it's current operation and sometimes percent of progress is complete
-		else if (!strcmp(type, "ProgressMsg")) {
-			err = restore_handle_progress_msg(client, message);
-		}
+			// restore logs are available if a previous restore failed
+			else if (!strcmp(type, "PreviousRestoreLogMsg")) {
+				err = restore_handle_previous_restore_log_msg(restore, message);
+			}
 
-		// status messages usually indicate the current state of the restored
-		// process or often to signal an error has been encountered
-		else if (!strcmp(type, "StatusMsg")) {
-			err = restore_handle_status_msg(restore, message);
-			if (restore_finished) {
-				client->flags |= FLAG_QUIT;
+			// progress notification messages sent by the restored inform the client
+			// of it's current operation and sometimes percent of progress is complete
+			else if (!strcmp(type, "ProgressMsg")) {
+				err = restore_handle_progress_msg(client, message);
+			}
+
+			// status messages usually indicate the current state of the restored
+			// process or often to signal an error has been encountered
+			else if (!strcmp(type, "StatusMsg")) {
+				err = restore_handle_status_msg(restore, message);
+				if (restore_finished) {
+					client->flags |= FLAG_QUIT;
+				}
+			}
+
+			// baseband update message
+			else if (!strcmp(type, "BBUpdateStatusMsg")) {
+				err = restore_handle_bb_update_status_msg(restore, message);
+			}
+
+			// there might be some other message types i'm not aware of, but I think
+			// at least the "previous error logs" messages usually end up here
+			else {
+				debug("Unknown message type received\n");
+				//if (idevicerestore_debug)
+					debug_plist(message);
 			}
 		}
-
-		// baseband update message
-		else if (!strcmp(type, "BBUpdateStatusMsg")) {
-			err = restore_handle_bb_update_status_msg(restore, message);
-		}
-
-		// there might be some other message types i'm not aware of, but I think
-		// at least the "previous error logs" messages usually end up here
-		else {
-			debug("Unknown message type received\n");
-			//if (idevicerestore_debug)
-				debug_plist(message);
-		}
-
-		free(type);
-		plist_free(message);
-		message = NULL;
 	}
+
+	if (type) {free(type); type = NULL;}
+	if (message) {plist_free(message);message = NULL;}
 
 	if (fdr_control_channel) {
 		fdr_disconnect(fdr_control_channel);

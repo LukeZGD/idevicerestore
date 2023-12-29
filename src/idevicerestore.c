@@ -1866,6 +1866,8 @@ const char* get_component_name(const char* filename) {
 		return "BatteryCharging";
 	} else if (!strncmp(filename, "glyphplugin", 11)) {
 		return "BatteryPlugin";
+	} else if (!strncmp(filename, "batterycharging", 15)) {
+		return "BatteryCharging";
 	} else if (!strncmp(filename, "batterycharging0", 16)) {
 		return "BatteryCharging0";
 	} else if (!strncmp(filename, "batterycharging1", 16)) {
