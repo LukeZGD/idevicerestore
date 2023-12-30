@@ -175,7 +175,7 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 			uint64_t this_ecid = (uint64_t)-1;
 
 			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
-				if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+				if (client->version && (client->version[0] == '1' || client->version[0] == '2')) {
 					/*
 						This info isn't available pre-iOS 3, so whatever
 						Just don't restore multiple pre-iOS 3 devices at once ;)
@@ -331,8 +331,16 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		return 0;
 	}
 	if (!client->ecid) {
-		error("ERROR: %s: no ECID given in client data\n", __func__);
-		return 0;
+		if (client->device && client->device->chip_id == 0x8900){
+			/*
+				iOS 1 restored doesn't tell us the device ECID, nor do we actually know it
+			*/
+			debug("%s: Skipping ECID check for 0x8900 device %s\n", __func__, udid);
+			return 1;
+		}else{
+			error("ERROR: %s: no ECID given in client data\n", __func__);
+			return 0;
+		}
 	}
 
 	idevice_t device = NULL;
@@ -348,6 +356,9 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		return 0;
 	}
 
+	if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+		sleep(10);
+	}
 	restore_error = restored_client_new(device, &restored, "idevicerestore");
 	if (restore_error != RESTORE_E_SUCCESS) {
 		error("ERROR: %s: can't connect to restored\n", __func__);
@@ -371,7 +382,7 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		restored_client_free(restored);
 		idevice_free(device);
 		plist_free(hwinfo);
-		if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
+		if (client->version && (client->version[0] == '1' || client->version[0] == '2')) {
 			/*
 				This info isn't available pre-iOS 3, so whatever
 				Just don't restore multiple pre-iOS 3 devices at once ;)
@@ -450,13 +461,13 @@ int restore_open_with_timeout(struct idevicerestore_client_t* client) {
 		return -1;
 	}
 
-	if(client->srnm == NULL) {
-		error("ERROR: no SerialNumber in client data!\n");
+	if (client->ecid == 0 && (!client->device || client->device->chip_id != 0x8900)) {
+		error("ERROR: no ECID in client data!\n");
 		return -1;
 	}
 
 	// create our restore client if it doesn't yet exist
-	if(client->restore == NULL) {
+	if (client->restore == NULL) {
 		client->restore = (struct restore_client_t*) malloc(sizeof(struct restore_client_t));
 		if(client->restore == NULL) {
 			error("ERROR: Out of memory\n");
@@ -2441,16 +2452,6 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 //	}
 
 	fdr_client_t fdr_control_channel = NULL;
-	info("Starting FDR listener thread\n");
-	if (!fdr_connect(device, FDR_CTRL, &fdr_control_channel)) {
-		if(thread_new(&fdr_thread, fdr_listener_thread, fdr_control_channel)) {
-			error("ERROR: Failed to start FDR listener thread\n");
-			fdr_thread = (thread_t)NULL; /* undefined after failure */
-		}
-	} else {
-		error("ERROR: Failed to start FDR Ctrl channel\n");
-		// FIXME: We might want to return failure here as it will likely fail
-	}
 
 	plist_t opts = plist_new_dict();
 	// FIXME: required?

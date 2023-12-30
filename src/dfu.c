@@ -324,7 +324,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	irecv_get_mode(client->dfu->client, &mode);
 
-	if (mode != IRECV_K_DFU_MODE) {
+	if (mode != IRECV_K_DFU_MODE && mode != IRECV_K_WTF_MODE) {
 		info("NOTE: device is not in DFU mode, assuming recovery mode.\n");
 		client->mode = &idevicerestore_modes[MODE_RECOVERY];
 		return 0;

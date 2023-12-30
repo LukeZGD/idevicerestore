@@ -186,6 +186,11 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		error("ERROR: Unable to discover device model\n");
 		return -1;
 	}
+	if (get_ecid(client, &client->ecid) < 0) {
+		error("ERROR: Unable to find device ECID\n");
+		return -1;
+	}
+	info("Found ECID " FMT_qu "\n", (long long unsigned int)client->ecid);
 	idevicerestore_progress(client, RESTORE_STEP_DETECT, 0.2);
 	info("Identified device as %s, %s\n", client->device->hardware_model, client->device->product_type);
 
@@ -302,6 +307,14 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
 			strcpy(tmpstr, p_all_flash);
 			strcat(tmpstr, "/manifest");
+
+			if (!ipsw_file_exists(client->ipsw, tmpstr) && strcmp(tmpstr, "Firmware/all_flash/all_flash.m68ap.production/manifest") == 0) {
+				info("Cannot find m68ap manifest, trying n45ap\n");
+				sprintf(lcmodel, "n45ap");
+				sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
+				strcpy(tmpstr, p_all_flash);
+				strcat(tmpstr, "/manifest");
+			}
 
 			// get all_flash file manifest
 			char *files[16];
@@ -497,14 +510,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.0);
 	/* retrieve shsh blobs if required */
 	if (tss_enabled) {
-		debug("Getting device's ECID for TSS request\n");
-		/* fetch the device's ECID for the TSS request */
-		if (get_ecid(client, &client->ecid) < 0) {
-			error("ERROR: Unable to find device ECID\n");
-			return -1;
-		}
-		info("Found ECID " FMT_qu "\n", (long long unsigned int)client->ecid);
-
 		if (client->build_major > 8) {
 			unsigned char* nonce = NULL;
 			int nonce_size = 0;
@@ -1158,6 +1163,11 @@ const char* check_hardware_model(struct idevicerestore_client_t* client) {
 		break;
 	}
 
+	if (mode == MODE_WTF) {
+		hw_model = "WTF";
+		return hw_model;
+	}
+
 	if (hw_model != NULL) {
 		irecv_devices_get_device_by_hardware_model(hw_model, &client->device);
 	}
@@ -1708,9 +1718,23 @@ int build_manifest_check_compatibility(plist_t build_manifest, const char* produ
 	plist_t node = plist_dict_get_item(build_manifest, "SupportedProductTypes");
 	if (!node || (plist_get_node_type(node) != PLIST_ARRAY)) {
 		debug("%s: ERROR: SupportedProductTypes key missing\n", __func__);
-		debug("%s: WARNING: If attempting to install iPhoneOS 2.x, be advised that Restore.plist does not contain the", __func__);
-		debug("%s: WARNING: key 'SupportedProductTypes'. Recommendation is to manually add it to the Restore.plist.", __func__);
-		return -1;
+		node = plist_dict_get_item(build_manifest, "ProductType");
+		if (plist_get_node_type(node) == PLIST_STRING) {
+			char *val = NULL;
+			plist_get_string_val(node, &val);
+			if (val && (strcmp(val, product) == 0)) {
+				res = 0;
+				free(val);
+			}
+			const char *product2 = "iPod1,1";
+			if (val && (strcmp(val, product2) == 0)) {
+				res = 0;
+				free(val);
+			}
+		}else{
+			debug("%s: ERROR: ProductType key missing\n", __func__);
+		}
+		return res;
 	}
 	uint32_t pc = plist_array_get_size(node);
 	uint32_t i;
