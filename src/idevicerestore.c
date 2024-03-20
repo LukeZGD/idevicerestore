@@ -263,7 +263,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	idevicerestore_progress(client, RESTORE_STEP_DETECT, 0.8);
 
 	/* check if device type is supported by the given build manifest */
-	if (build_manifest_check_compatibility(buildmanifest, client->device->product_type) < 0) {
+	if (strcmp(client->device->hardware_model, "m68ap") == 0) {
+		info("Skipping manifest compatibility check\n");
+	} else if (build_manifest_check_compatibility(buildmanifest, client->device->product_type) < 0) {
 		error("ERROR: Could not make sure this firmware is suitable for the current device. Refusing to continue.\n");
 		return -1;
 	}
@@ -286,6 +288,21 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	// choose whether this is an upgrade or a restore (default to upgrade)
 	client->tss = NULL;
 	plist_t build_identity = NULL;
+
+	char tmpstr[256];
+	char p_all_flash[128];
+	char lcmodel[8];
+	strcpy(lcmodel, client->device->hardware_model);
+	int x = 0;
+	while (lcmodel[x]) {
+		lcmodel[x] = tolower(lcmodel[x]);
+		x++;
+	}
+
+	sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
+	strcpy(tmpstr, p_all_flash);
+	strcat(tmpstr, "/manifest");
+
 	if (client->flags & FLAG_CUSTOM) {
 		build_identity = plist_new_dict();
 		{
@@ -294,23 +311,17 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			plist_t inf;
 			plist_t manifest;
 
-			char tmpstr[256];
-			char p_all_flash[128];
-			char lcmodel[8];
-			strcpy(lcmodel, client->device->hardware_model);
-			int x = 0;
-			while (lcmodel[x]) {
-				lcmodel[x] = tolower(lcmodel[x]);
-				x++;
-			}
-
-			sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
-			strcpy(tmpstr, p_all_flash);
-			strcat(tmpstr, "/manifest");
-
 			if (!ipsw_file_exists(client->ipsw, tmpstr) && strcmp(tmpstr, "Firmware/all_flash/all_flash.m68ap.production/manifest") == 0) {
 				info("Cannot find m68ap manifest, trying n45ap\n");
 				sprintf(lcmodel, "n45ap");
+				sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
+				strcpy(tmpstr, p_all_flash);
+				strcat(tmpstr, "/manifest");
+			}
+
+			if (!ipsw_file_exists(client->ipsw, tmpstr) && strcmp(tmpstr, "Firmware/all_flash/all_flash.n45ap.production/manifest") == 0) {
+				info("Cannot find n45ap manifest, trying n82ap\n");
+				sprintf(lcmodel, "n82ap");
 				sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
 				strcpy(tmpstr, p_all_flash);
 				strcat(tmpstr, "/manifest");
@@ -472,7 +483,12 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			plist_dict_set_item(build_identity, "Manifest", manifest);
 		}
 	} else if (client->flags & FLAG_ERASE) {
-		build_identity = build_manifest_get_build_identity_for_model_with_restore_behavior(buildmanifest, client->device->hardware_model, "Erase");
+		if (!ipsw_file_exists(client->ipsw, tmpstr) && strcmp(tmpstr, "Firmware/all_flash/all_flash.m68ap.production/manifest") == 0) {
+			info("Cannot find m68ap manifest, trying n82ap\n");
+			sprintf(lcmodel, "n82ap");
+		}
+
+		build_identity = build_manifest_get_build_identity_for_model_with_restore_behavior(buildmanifest, lcmodel, "Erase");
 		if (build_identity == NULL) {
 			error("ERROR: Unable to find any build identities\n");
 			plist_free(buildmanifest);
@@ -988,7 +1004,7 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	while ((opt = getopt_long(argc, argv, "dhcesxtplibgo:u:nC:wk", longopts, &optindex)) > 0) {
+	while ((opt = getopt_long(argc, argv, "dhcesxtplibgjo:u:nC:wk", longopts, &optindex)) > 0) {
 		switch (opt) {
 		case 'h':
 			usage(argc, argv);
@@ -1071,6 +1087,10 @@ int main(int argc, char* argv[]) {
         
         case 'g':
             client->flags |= FLAG_PANICLOG;
+            break;
+
+        case 'j':
+            client->flags |= FLAG_PANICLOGJ;
             break;
         
         default:
@@ -1723,11 +1743,6 @@ int build_manifest_check_compatibility(plist_t build_manifest, const char* produ
 			char *val = NULL;
 			plist_get_string_val(node, &val);
 			if (val && (strcmp(val, product) == 0)) {
-				res = 0;
-				free(val);
-			}
-			const char *product2 = "iPod1,1";
-			if (val && (strcmp(val, product2) == 0)) {
 				res = 0;
 				free(val);
 			}

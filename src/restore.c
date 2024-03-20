@@ -2446,6 +2446,13 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
         restore_reboot(client);
         return 0;
     }
+
+    if (client->flags & FLAG_PANICLOGJ) {
+        if (!node) {
+            info("No paniclog available\n");
+        }
+        return 0;
+    }
     
 //	if (plist_dict_get_item(client->tss, "BBTicket")) {
 //		client->restore->bbtss = plist_copy(client->tss);
