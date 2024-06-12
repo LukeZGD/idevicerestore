@@ -70,7 +70,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone https://github.com/LukeeGD/libusbmuxd
     git clone https://github.com/LukeeGD/libimobiledevice
     git clone https://github.com/LukeeGD/libirecovery
-    git clone https://github.com/libimobiledevice/libideviceactivation
+    git clone https://github.com/LukeeGD/libideviceactivation
     git clone https://github.com/libimobiledevice/ideviceinstaller
     git clone https://github.com/nih-at/libzip
     #aria2c https://www.openssl.org/source/openssl-$sslver.tar.gz
