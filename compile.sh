@@ -65,13 +65,13 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Cloning git repos and other deps"
     git clone https://github.com/lzfse/lzfse
-    git clone https://github.com/libimobiledevice/libplist
-    git clone https://github.com/libimobiledevice/libimobiledevice-glue
+    git clone https://github.com/LukeeGD/libplist
+    git clone https://github.com/LukeeGD/libimobiledevice-glue
     git clone https://github.com/LukeeGD/libusbmuxd
     git clone https://github.com/LukeeGD/libimobiledevice
     git clone https://github.com/LukeeGD/libirecovery
     git clone https://github.com/LukeeGD/libideviceactivation
-    git clone https://github.com/libimobiledevice/ideviceinstaller
+    git clone https://github.com/LukeeGD/ideviceinstaller
     git clone https://github.com/nih-at/libzip
     #aria2c https://www.openssl.org/source/openssl-$sslver.tar.gz
     aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
