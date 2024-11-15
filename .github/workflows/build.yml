@@ -2,7 +2,7 @@ name: Compile idevicerestore
 on: [push]
 jobs:
   linux-limd:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04
     steps:
       - uses: actions/checkout@v3
 
@@ -10,11 +10,11 @@ jobs:
         run: ./compile.sh limd
 
       - name: Zip libimobiledevice
-        run: zip -r libimobiledevice_linux.zip bin/libimobiledevice/
+        run: zip -r libimobiledevice2_linux.zip bin/libimobiledevice/
 
       - name: Update latest release
         uses: pyTooling/Actions/releaser@main
         with:
           tag: latest
           token: ${{ secrets.GITHUB_TOKEN }}
-          files: libimobiledevice_linux.zip
+          files: libimobiledevice2_linux.zip

@@ -54,7 +54,7 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Downloading apt deps"
     sudo apt update
-    sudo apt remove -y libssl-dev | true
+    #sudo apt remove -y libssl-dev | true
     sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake zlib1g-dev libbz2-dev libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev liblzma-dev libxml2-dev
     if [[ $(uname -m) != "a"* ]]; then
         curl -LO https://apt.llvm.org/llvm.sh
@@ -77,7 +77,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     #aria2c https://www.openssl.org/source/openssl-$sslver.tar.gz
     aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
     aria2c https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz
-    aria2c https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2
+    #aria2c https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2
 
     : '
     echo "Building openssl..."
@@ -95,13 +95,14 @@ if [[ $OSTYPE == "linux"* ]]; then
     make install_sw install_ssldirs
     rm -rf /usr/local/lib/libcrypto.so* /usr/local/lib/libssl.so*
     cd ..
-    '
+
     echo "Building mbedtls..."
     bzip2 -d mbedtls-3.6.2.tar.bz2
     tar -xvf mbedtls-3.6.2.tar
     cd mbedtls-3.6.2
     make $JNUM
     make $JNUM install
+    '
 
     echo "Building lzfse..."
     cd $FR_BASE
@@ -133,7 +134,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libimobiledevice..."
     cd $FR_BASE
     cd libimobiledevice
-    ./autogen.sh $CONF_ARGS --without-openssl --with-mbedtls $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
+    ./autogen.sh $CONF_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
     make $JNUM
     make $JNUM install
 
@@ -174,7 +175,7 @@ if [[ $OSTYPE == "linux"* ]]; then
         echo "Building libideviceactivation..."
         cd $FR_BASE
         cd libideviceactivation
-        ./autogen.sh $CONF_ARGS --without-openssl --with-mbedtls $CC_ARGS
+        ./autogen.sh $CONF_ARGS $CC_ARGS
         make $JNUM
         make $JNUM install
 
