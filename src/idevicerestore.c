@@ -175,7 +175,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		}
 		dfu_client_free(client);
 
-		sleep(1);
+		sleep(2);
 
 		free(wtftmp);
 		client->mode = &idevicerestore_modes[MODE_DFU];
