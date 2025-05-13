@@ -202,7 +202,7 @@ if [[ $OSTYPE == "linux"* ]]; then
         echo "Building libideviceactivation..."
         cd $FR_BASE
         cd libideviceactivation
-        ./autogen.sh $CONF_ARGS $CC_ARGS
+        ./autogen.sh $CONF_ARGS $CC_ARGS LDFLAGS="-lz"
         make $JNUM
         make $JNUM install
 
