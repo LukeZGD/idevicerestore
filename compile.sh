@@ -54,7 +54,7 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Downloading apt deps"
     sudo apt update
-    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake zlib1g-dev libbz2-dev libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev liblzma-dev libxml2-dev
+    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake zlib1g-dev libbz2-dev libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev python3-dev libssl-dev autopoint
     if [[ $(uname -m) != "a"* ]]; then
         curl -LO https://apt.llvm.org/llvm.sh
         chmod 0755 llvm.sh
@@ -69,9 +69,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone https://github.com/LukeeGD/libusbmuxd
     git clone https://github.com/LukeeGD/libimobiledevice
     git clone https://github.com/LukeeGD/libirecovery
-    git clone https://github.com/LukeeGD/libideviceactivation
-    git clone https://github.com/LukeeGD/ideviceinstaller
-    git clone https://github.com/nih-at/libzip
+    git clone --filter=blob:none https://github.com/nih-at/libzip
     #git clone https://github.com/curl/curl
     #aria2c https://www.openssl.org/source/openssl-$sslver.tar.gz
     aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -94,7 +92,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     make install_sw install_ssldirs
     rm -rf /usr/local/lib/libcrypto.so* /usr/local/lib/libssl.so*
     cd ..
-    '
+    
     if [[ $1 == "limd" ]]; then
         sudo apt remove -y libssl-dev || true
         echo "Building mbedtls..."
@@ -105,6 +103,7 @@ if [[ $OSTYPE == "linux"* ]]; then
         make $JNUM install
         MBEDTLS_ARGS="--without-openssl --with-mbedtls"
     fi
+    '
 
     echo "Building lzfse..."
     cd $FR_BASE
@@ -174,6 +173,32 @@ if [[ $OSTYPE == "linux"* ]]; then
     make $JNUM install
 
     if [[ $1 == "limd" ]]; then
+        cd $FR_BASE
+        #git clone --filter=blob:none https://github.com/tukaani-project/xz
+        git clone --filter=blob:none https://github.com/GNOME/libxml2
+        git clone https://github.com/LukeeGD/libideviceactivation
+        git clone https://github.com/LukeeGD/ideviceinstaller
+        : '
+        echo "Building xz..."
+        cd $FR_BASE
+        cd xz
+        git checkout v5.8.1
+        ./autogen.sh --no-po4a
+        ./configure --enable-static --disable-shared
+        make $JNUM
+        make $JNUM install
+        rm -rf /usr/local/lib/liblzma.so*
+        '
+        echo "Building libxml2..."
+        cd $FR_BASE
+        cd libxml2
+        git checkout v2.11.0
+        mkdir build
+        cd build
+        cmake .. -D BUILD_SHARED_LIBS=OFF -D LIBXML2_WITH_LZMA=OFF
+        make $JNUM
+        make $JNUM install
+
         echo "Building libideviceactivation..."
         cd $FR_BASE
         cd libideviceactivation
