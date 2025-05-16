@@ -161,12 +161,14 @@ if [[ $OSTYPE == "linux"* ]]; then
         make $JNUM
         make $JNUM install
 
+        : '
         echo "Building ideviceinstaller..."
         cd $FR_BASE
         cd ideviceinstaller
         ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-L/usr/local/lib -lz -ldl"
         make $JNUM
         make $JNUM install
+        '
 
         cd $FR_BASE
         cd ..
