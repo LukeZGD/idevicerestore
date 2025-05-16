@@ -81,7 +81,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     ./configure --disable-shared
     make $JNUM
     make install
-    SSL_ARGS="--without-openssl --with-libressl"
 
     echo "Building lzfse..."
     cd $FR_BASE
@@ -113,7 +112,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libimobiledevice..."
     cd $FR_BASE
     cd libimobiledevice
-    ./autogen.sh $CONF_ARGS $SSL_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
+    ./autogen.sh $CONF_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
     make $JNUM
     make $JNUM install
 
