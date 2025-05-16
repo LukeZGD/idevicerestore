@@ -53,7 +53,7 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Downloading apt deps"
     sudo apt update
-    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake zlib1g-dev libbz2-dev libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev python3-dev libssl-dev autopoint
+    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake zlib1g-dev libbz2-dev libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev python3-dev autopoint
     if [[ $(uname -m) != "a"* ]]; then
         curl -LO https://apt.llvm.org/llvm.sh
         chmod 0755 llvm.sh
@@ -69,11 +69,12 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone https://github.com/LukeeGD/libimobiledevice
     git clone https://github.com/LukeeGD/libirecovery
     git clone --filter=blob:none https://github.com/nih-at/libzip
-    aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
-    aria2c https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz
+    aria2c="aria2c -c -s 16 -x 16 -k 1M -j 1"
+    $aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+    $aria2c https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz
 
     sslver="4.1.0"
-    aria2c https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$sslver.tar.gz
+    $aria2c https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$sslver.tar.gz
     echo "Building libressl..."
     tar -zxvf libressl-$sslver.tar.gz
     cd libressl-$sslver
