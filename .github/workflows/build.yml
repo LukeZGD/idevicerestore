@@ -20,7 +20,7 @@ jobs:
         run: ./compile.sh limd
 
       - name: Zip libimobiledevice
-        run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/libimobiledevice/
+        run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
 
       - name: Update latest release
         uses: pyTooling/Actions/releaser/composite@main
