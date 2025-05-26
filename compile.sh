@@ -53,8 +53,8 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Downloading apt deps"
     sudo apt update
-    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev python3-dev autopoint
-    sudo apt remove -y libssl-dev
+    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libzstd-dev python3-dev autopoint
+    sudo apt remove -y libssl-dev || true
     if [[ $(uname -m) != "a"* ]]; then
         curl -LO https://apt.llvm.org/llvm.sh
         chmod 0755 llvm.sh
@@ -141,9 +141,20 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
+        echo "Downloading more deps and utils"
+        $aria2c https://github.com/curl/curl/archive/refs/tags/curl-7_76_1.zip
         git clone --filter=blob:none https://github.com/GNOME/libxml2
         git clone https://github.com/LukeeGD/libideviceactivation
         git clone https://github.com/LukeeGD/ideviceinstaller
+
+        echo "Building curl..."
+        unzip curl-curl-7_76_1.zip -d .
+        cd curl-curl-7_76_1
+        autoreconf -fi
+        ./configure
+        cd lib
+        make $JNUM
+        make $JNUM install
 
         echo "Building libxml2..."
         cd $FR_BASE
