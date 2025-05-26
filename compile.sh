@@ -10,7 +10,6 @@ cd tmp
 
 set -e
 
-sslver="1.1.1w"
 if [[ $OSTYPE == "linux"* ]]; then
     platform="linux"
     echo "* Platform: Linux"
@@ -54,7 +53,7 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Downloading apt deps"
     sudo apt update
-    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake zlib1g-dev libbz2-dev libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev python3-dev libssl-dev autopoint
+    sudo apt install -y aria2 curl build-essential checkinstall git autoconf automake libtool-bin pkg-config cmake libusb-1.0-0-dev libusb-dev libpng-dev libreadline-dev libcurl4-openssl-dev libzstd-dev python3-dev autopoint
     if [[ $(uname -m) != "a"* ]]; then
         curl -LO https://apt.llvm.org/llvm.sh
         chmod 0755 llvm.sh
@@ -70,40 +69,18 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone https://github.com/LukeeGD/libimobiledevice
     git clone https://github.com/LukeeGD/libirecovery
     git clone --filter=blob:none https://github.com/nih-at/libzip
-    #git clone https://github.com/curl/curl
-    #aria2c https://www.openssl.org/source/openssl-$sslver.tar.gz
-    aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
-    aria2c https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz
-    aria2c https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-3.6.2/mbedtls-3.6.2.tar.bz2
+    aria2c="aria2c -c -s 16 -x 16 -k 1M -j 1"
+    $aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+    $aria2c https://github.com/facebook/zstd/releases/download/v1.5.2/zstd-1.5.2.tar.gz
 
-    : '
-    echo "Building openssl..."
-    tar -zxvf openssl-$sslver.tar.gz
-    cd openssl-$sslver
-    if [[ $(uname -m) == "a"* && $(getconf LONG_BIT) == 64 ]]; then
-        env $CC_ARGS ./Configure no-ssl3-method linux-aarch64 "-Wa,--noexecstack -fPIC"
-    elif [[ $(uname -m) == "a"* ]]; then
-        env $CC_ARGS ./Configure no-ssl3-method linux-generic32 "-Wa,--noexecstack -fPIC"
-    else
-        env $CC_ARGS ./Configure no-ssl3-method enable-ec_nistp_64_gcc_128 linux-x86_64 "-Wa,--noexecstack -fPIC"
-    fi
-    make $JNUM depend $CC_ARGS
-    make $JNUM $CC_ARGS
-    make install_sw install_ssldirs
-    rm -rf /usr/local/lib/libcrypto.so* /usr/local/lib/libssl.so*
-    cd ..
-    
-    if [[ $1 == "limd" ]]; then
-        sudo apt remove -y libssl-dev || true
-        echo "Building mbedtls..."
-        bzip2 -d mbedtls-3.6.2.tar.bz2
-        tar -xvf mbedtls-3.6.2.tar
-        cd mbedtls-3.6.2
-        make $JNUM
-        make $JNUM install
-        MBEDTLS_ARGS="--without-openssl --with-mbedtls"
-    fi
-    '
+    sslver="2.2.7"
+    $aria2c https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$sslver.tar.gz
+    echo "Building libressl..."
+    tar -zxvf libressl-$sslver.tar.gz
+    cd libressl-$sslver
+    ./configure
+    make $JNUM
+    make install
 
     echo "Building lzfse..."
     cd $FR_BASE
@@ -135,7 +112,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libimobiledevice..."
     cd $FR_BASE
     cd libimobiledevice
-    ./autogen.sh $CONF_ARGS $MBEDTLS_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
+    ./autogen.sh $CONF_ARGS $CC_ARGS LIBS="-L/usr/local/lib -lz -ldl"
     make $JNUM
     make $JNUM install
 
@@ -146,17 +123,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     make $JNUM
     make $JNUM install
 
-    : '
-    echo "Building curl..."
-    cd $FR_BASE
-    cd curl
-    git checkout curl-8_11_0
-    autoreconf -vi
-    ./configure -C --disable-debug --disable-dependency-tracking --with-mbedtls --without-libpsl ${CC_ARGS} CFLAGS="-fPIC" LDFLAGS="$LD_ARGS -L/usr/local/lib"
-    make ${JNUM} ${LNUM} ${CC_ARGS} CFLAGS="-fPIC" CXXFLAGS="-fPIC" LDFLAGS="${LD_ARGS}"
-    make install | true
-    rm -rf /usr/local/lib/libcurl.la
-    '
     echo "Building libzip..."
     cd $FR_BASE
     cd libzip
@@ -174,28 +140,17 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
-        #git clone --filter=blob:none https://github.com/tukaani-project/xz
         git clone --filter=blob:none https://github.com/GNOME/libxml2
         git clone https://github.com/LukeeGD/libideviceactivation
         git clone https://github.com/LukeeGD/ideviceinstaller
-        : '
-        echo "Building xz..."
-        cd $FR_BASE
-        cd xz
-        git checkout v5.8.1
-        ./autogen.sh --no-po4a
-        ./configure --enable-static --disable-shared
-        make $JNUM
-        make $JNUM install
-        rm -rf /usr/local/lib/liblzma.so*
-        '
+
         echo "Building libxml2..."
         cd $FR_BASE
         cd libxml2
         git checkout v2.11.0
         mkdir build
         cd build
-        cmake .. -D BUILD_SHARED_LIBS=OFF -D LIBXML2_WITH_LZMA=OFF
+        cmake .. -D BUILD_SHARED_LIBS=OFF -D LIBXML2_WITH_LZMA=OFF -D LIBXML2_WITH_ZLIB=OFF
         make $JNUM
         make $JNUM install
 
@@ -215,9 +170,9 @@ if [[ $OSTYPE == "linux"* ]]; then
 
         cd $FR_BASE
         cd ..
-        mkdir bin/libimobiledevice
-        cp /usr/local/bin/i* bin/libimobiledevice/
-        exit
+        mkdir -p bin/lib
+        cp /usr/local/bin/i* bin/
+        cp /usr/local/lib/libcrypto.so.35 /usr/local/lib/libssl.so.35 bin/lib/
     fi
 
     echo "Building idevicerestore!"
@@ -225,7 +180,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     cd ..
     ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-ldl"
     make $JNUM
-    cp src/idevicerestore bin/idevicerestore_$platform
+    cp src/idevicerestore bin/idevicerestore
 
 elif [[ $OSTYPE == "msys" ]]; then
     platform="win"
