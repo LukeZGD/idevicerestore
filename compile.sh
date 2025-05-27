@@ -156,6 +156,9 @@ if [[ $OSTYPE == "linux"* ]]; then
         cd lib
         make $JNUM
         make $JNUM install
+        export libcurl_VERSION="$(curl-config --version |cut -d " " -f 2)"
+        export libcurl_CFLAGS="$(curl-config --cflags)"
+        export libcurl_LIBS="$(curl-config --static-libs)"
 
         echo "Building libxml2..."
         cd $FR_BASE
