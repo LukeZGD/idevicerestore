@@ -153,8 +153,6 @@ if [[ $OSTYPE == "linux"* ]]; then
         cd curl-curl-$curlver
         autoreconf -fi
         ./configure --disable-werror --disable-shared
-        cp libcurl.pc /usr/local/lib/pkgconfig
-        cd lib
         make $JNUM
         make $JNUM install
 
