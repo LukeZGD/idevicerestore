@@ -142,7 +142,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
         echo "Downloading more deps and utils"
-        curlver="7_76_1"
+        curlver="7_54_0"
         $aria2c https://github.com/curl/curl/archive/refs/tags/curl-$curlver.zip
         git clone --filter=blob:none https://github.com/GNOME/libxml2
         git clone https://github.com/LukeeGD/libideviceactivation
@@ -153,6 +153,7 @@ if [[ $OSTYPE == "linux"* ]]; then
         cd curl-curl-$curlver
         autoreconf -fi
         ./configure --disable-werror --disable-shared
+        cp libcurl.pc /usr/local/lib/pkgconfig
         cd lib
         make $JNUM
         make $JNUM install
