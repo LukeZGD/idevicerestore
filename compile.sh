@@ -152,13 +152,10 @@ if [[ $OSTYPE == "linux"* ]]; then
         unzip curl-curl-$curlver.zip -d .
         cd curl-curl-$curlver
         autoreconf -fi
-        ./configure
+        ./configure --disable-werror --disable-shared
         cd lib
         make $JNUM
         make $JNUM install
-        export libcurl_VERSION="$(curl-config --version |cut -d " " -f 2)"
-        export libcurl_CFLAGS="$(curl-config --cflags)"
-        export libcurl_LIBS="$(curl-config --static-libs)"
 
         echo "Building libxml2..."
         cd $FR_BASE
