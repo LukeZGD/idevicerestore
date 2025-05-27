@@ -169,7 +169,7 @@ if [[ $OSTYPE == "linux"* ]]; then
         echo "Building libideviceactivation..."
         cd $FR_BASE
         cd libideviceactivation
-        ./autogen.sh $CONF_ARGS $CC_ARGS LDFLAGS="-lz"
+        ./autogen.sh $CONF_ARGS $CC_ARGS LDFLAGS="-lz" CFLAGS="-DCURL_STATICLIB"
         make $JNUM
         make $JNUM install
 
@@ -190,7 +190,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building idevicerestore!"
     cd $FR_BASE
     cd ..
-    ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-ldl"
+    ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-ldl" CFLAGS="-DCURL_STATICLIB"
     make $JNUM
     cp src/idevicerestore bin/idevicerestore
 
