@@ -142,7 +142,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
         echo "Downloading more deps and utils"
-        $aria2c https://github.com/curl/curl/archive/refs/tags/curl-7_76_1.zip
+        $aria2c https://github.com/curl/curl/archive/refs/tags/curl-7_54_0.zip
         git clone --filter=blob:none https://github.com/GNOME/libxml2
         git clone https://github.com/LukeeGD/libideviceactivation
         git clone https://github.com/LukeeGD/ideviceinstaller
