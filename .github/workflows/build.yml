@@ -20,14 +20,14 @@ jobs:
         run: ./compile.sh limd
 
       - name: Zip libimobiledevice
-        run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
+        run: zip -r libimobiledevice_linux-latest-${{ matrix.arch.name }}.zip bin/
 
       - name: Update latest release
         uses: pyTooling/Actions/releaser/composite@main
         with:
           tag: latest
           token: ${{ secrets.GITHUB_TOKEN }}
-          files: libimobiledevice_linux-${{ matrix.arch.name }}.zip
+          files: libimobiledevice_linux-latest-${{ matrix.arch.name }}.zip
 
   # win:
   #   runs-on: windows-latest

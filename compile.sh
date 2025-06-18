@@ -64,11 +64,13 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Cloning git repos and other deps"
     git clone https://github.com/lzfse/lzfse
-    git clone https://github.com/LukeeGD/libplist
-    git clone https://github.com/LukeeGD/libimobiledevice-glue
-    git clone https://github.com/LukeeGD/libusbmuxd
-    git clone https://github.com/LukeeGD/libimobiledevice
-    git clone https://github.com/LukeeGD/libirecovery
+    git clone https://github.com/libimobiledevice/libplist
+    git clone https://github.com/libimobiledevice/libimobiledevice-glue
+    git clone https://github.com/libimobiledevice/libusbmuxd
+    git clone https://github.com/libimobiledevice/libtatsu
+    git clone https://github.com/libimobiledevice/libimobiledevice
+    git clone https://github.com/libimobiledevice/libirecovery
+    git clone https://github.com/libimobiledevice/idevicerestore
     git clone --filter=blob:none https://github.com/nih-at/libzip
     aria2c="aria2c -c -s 16 -x 16 -k 1M -j 1"
     $aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -106,6 +108,14 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libusbmuxd..."
     cd $FR_BASE
     cd libusbmuxd
+    ./autogen.sh $CONF_ARGS $CC_ARGS
+    make $JNUM
+    make $JNUM install
+
+
+    echo "Building libtatsu..."
+    cd $FR_BASE
+    cd libtatsu
     ./autogen.sh $CONF_ARGS $CC_ARGS
     make $JNUM
     make $JNUM install
@@ -189,10 +199,11 @@ if [[ $OSTYPE == "linux"* ]]; then
 
     echo "Building idevicerestore!"
     cd $FR_BASE
-    cd ..
+    cd idevicerestore
     ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-ldl"
     make $JNUM
-    cp src/idevicerestore bin/idevicerestore
+    cp src/idevicerestore ../bin/idevicerestore
+    cd ../..
 
 elif [[ $OSTYPE == "msys" ]]; then
     platform="win"
