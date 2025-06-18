@@ -201,7 +201,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     cd idevicerestore
     ./autogen.sh $ALT_CONF_ARGS $CC_ARGS LDFLAGS="$LD_ARGS" LIBS="-ldl"
     make $JNUM
-    cp src/idevicerestore ../bin/idevicerestore
+    cp src/idevicerestore ../../bin/idevicerestore
     cd ../..
 
 elif [[ $OSTYPE == "msys" ]]; then
