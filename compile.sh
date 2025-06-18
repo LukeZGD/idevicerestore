@@ -112,6 +112,15 @@ if [[ $OSTYPE == "linux"* ]]; then
     make $JNUM
     make $JNUM install
 
+    curlver="7_54_0"
+    $aria2c https://github.com/curl/curl/archive/refs/tags/curl-$curlver.zip
+    echo "Building curl..."
+    unzip curl-curl-$curlver.zip -d .
+    cd curl-curl-$curlver
+    autoreconf -fi
+    ./configure --disable-werror --disable-shared
+    make $JNUM
+    make $JNUM install
 
     echo "Building libtatsu..."
     cd $FR_BASE
@@ -152,19 +161,9 @@ if [[ $OSTYPE == "linux"* ]]; then
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
         echo "Downloading more deps and utils"
-        curlver="7_54_0"
-        $aria2c https://github.com/curl/curl/archive/refs/tags/curl-$curlver.zip
         git clone --filter=blob:none https://github.com/GNOME/libxml2
         git clone https://github.com/LukeeGD/libideviceactivation
         git clone https://github.com/LukeeGD/ideviceinstaller
-
-        echo "Building curl..."
-        unzip curl-curl-$curlver.zip -d .
-        cd curl-curl-$curlver
-        autoreconf -fi
-        ./configure --disable-werror --disable-shared
-        make $JNUM
-        make $JNUM install
 
         echo "Building libxml2..."
         cd $FR_BASE
