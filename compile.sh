@@ -66,18 +66,19 @@ if [[ $OSTYPE == "linux"* ]]; then
     git clone --filter=blob:none https://github.com/lzfse/lzfse
     git clone --filter=blob:none https://github.com/libimobiledevice/libplist
     git clone --filter=blob:none https://github.com/libimobiledevice/libimobiledevice-glue
-    git clone --filter=blob:none https://github.com/LukeeGD/libtatsu
-    git clone --filter=blob:none https://github.com/libimobiledevice/libusbmuxd
-    git clone --filter=blob:none https://github.com/libimobiledevice/libimobiledevice
-    git clone --filter=blob:none https://github.com/libimobiledevice/libirecovery
+    git clone --filter=blob:none https://github.com/LukeZGD/libtatsu
+    git clone --filter=blob:none https://github.com/LukeZGD/libusbmuxd
+    git clone --filter=blob:none https://github.com/LukeZGD/libimobiledevice
+    git clone --filter=blob:none https://github.com/LukeZGD/libirecovery
     # git clone --filter=blob:none https://github.com/libimobiledevice/idevicerestore # uncomment line for latest idr
-    git clone --filter=blob:none https://github.com/nih-at/libzip
-    git clone --filter=blob:none https://github.com/curl/curl
+    git clone --filter=blob:none https://github.com/nih-at/libzip -b v1.11.4
+    # 7_65_3 for old ssl, 8_17_0 for pre-3.0 ssl, 8_21_0 for latest
+    git clone --filter=blob:none https://github.com/curl/curl -b curl-7_65_3
     aria2c="aria2c -c -s 16 -x 16 -k 1M -j 1"
     $aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
 
     # comment section for ssl3
-    sslver="4.3.2" # or 2.2.9 for old ssl
+    sslver="2.2.9"
     $aria2c https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$sslver.tar.gz
     echo "Building libressl..."
     tar -zxvf libressl-$sslver.tar.gz
@@ -109,7 +110,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building curl..."
     cd $FR_BASE
     cd curl
-    git checkout curl-8_21_0 # or curl-7_65_3 for old ssl
     autoreconf -fi
     ./configure --disable-werror --disable-shared --with-openssl --without-libpsl
     make $JNUM
@@ -146,7 +146,6 @@ if [[ $OSTYPE == "linux"* ]]; then
     echo "Building libzip..."
     cd $FR_BASE
     cd libzip
-    git checkout v1.11.4
     sed -i 's/\"Build shared libraries\" ON/\"Build shared libraries\" OFF/g' CMakeLists.txt
     cmake $CC_ARGS .
     make $JNUM
@@ -162,7 +161,7 @@ if [[ $OSTYPE == "linux"* ]]; then
     if [[ $1 == "limd" ]]; then
         cd $FR_BASE
         echo "Downloading more deps and utils"
-        git clone --filter=blob:none https://github.com/GNOME/libxml2
+        git clone --filter=blob:none https://github.com/GNOME/libxml2 -b v2.15.3
         git clone --filter=blob:none https://github.com/libimobiledevice/libideviceactivation
         git clone --filter=blob:none https://github.com/libimobiledevice/ideviceinstaller
         git clone --filter=blob:none https://github.com/libimobiledevice/usbmuxd
@@ -203,7 +202,8 @@ if [[ $OSTYPE == "linux"* ]]; then
         cp /usr/local/bin/afcclient /usr/local/bin/i* /usr/local/bin/plistutil /usr/local/sbin/usbmuxd bin/
         rm -f bin/irb
         mkdir -p bin/lib # comment line for ssl3
-        cp /usr/local/lib/libcrypto.so.57 /usr/local/lib/libssl.so.60 bin/lib/ # comment line for ssl3 or change to so.35 for old ssl
+        cp /usr/local/lib/libcrypto.so.35 /usr/local/lib/libssl.so.35 bin/lib/
+        # cp /usr/local/lib/libcrypto.so.57 /usr/local/lib/libssl.so.60 bin/lib/ # for newer ssl (last tested 4.3.2)
     fi
 
     echo "Building idevicerestore!"
