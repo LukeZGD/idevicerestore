@@ -73,19 +73,37 @@ if [[ $OSTYPE == "linux"* ]]; then
     # git clone --filter=blob:none https://github.com/libimobiledevice/idevicerestore # uncomment line for latest idr
     git clone --filter=blob:none https://github.com/nih-at/libzip -b v1.11.4
     # 7_65_3 for old ssl, 8_17_0 for pre-3.0 ssl, 8_21_0 for latest
-    git clone --filter=blob:none https://github.com/curl/curl -b curl-7_65_3
+    git clone --filter=blob:none https://github.com/curl/curl -b curl-8_17_0
     aria2c="aria2c -c -s 16 -x 16 -k 1M -j 1"
     $aria2c https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
 
     # comment section for ssl3
-    sslver="2.2.9"
-    $aria2c https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$sslver.tar.gz
-    echo "Building libressl..."
-    tar -zxvf libressl-$sslver.tar.gz
-    cd libressl-$sslver
-    ./configure
-    make $JNUM
-    make install
+    # sslver="2.2.9"
+    # $aria2c https://ftp.openbsd.org/pub/OpenBSD/LibreSSL/libressl-$sslver.tar.gz
+    # echo "Building libressl..."
+    # tar -zxvf libressl-$sslver.tar.gz
+    # cd libressl-$sslver
+    # ./configure
+    # make $JNUM
+    # make install
+    if [[ ! -e $PREFIX/lib/libcrypto.a || ! -e $PREFIX/lib/libssl.a ]]; then
+        sslver="1.1.1w"
+        curl -LO https://www.openssl.org/source/openssl-$sslver.tar.gz
+        tar -zxvf openssl-$sslver.tar.gz
+        cd openssl-$sslver
+        if [[ $(uname -m) == "a"* && $(getconf LONG_BIT) == 64 ]]; then
+            ./Configure no-ssl3-method linux-aarch64 "-Wa,--noexecstack -fPIC"
+        elif [[ $(uname -m) == "a"* ]]; then
+            ./Configure no-ssl3-method linux-generic32 "-Wa,--noexecstack -fPIC"
+        else
+            ./Configure no-ssl3-method enable-ec_nistp_64_gcc_128 linux-x86_64 "-Wa,--noexecstack -fPIC"
+        fi
+        make $JNUM depend
+        make $JNUM
+        make install_sw install_ssldirs
+        rm -rf /usr/local/lib/libcrypto.so* /usr/local/lib/libssl.so*
+        cd ..
+    fi
 
     echo "Building lzfse..."
     cd $FR_BASE
@@ -201,8 +219,8 @@ if [[ $OSTYPE == "linux"* ]]; then
         cd ..
         cp /usr/local/bin/afcclient /usr/local/bin/i* /usr/local/bin/plistutil /usr/local/sbin/usbmuxd bin/
         rm -f bin/irb
-        mkdir -p bin/lib # comment line for ssl3
-        cp /usr/local/lib/libcrypto.so.35 /usr/local/lib/libssl.so.35 bin/lib/
+        # mkdir -p bin/lib # comment line for ssl3
+        # cp /usr/local/lib/libcrypto.so.35 /usr/local/lib/libssl.so.35 bin/lib/
         # cp /usr/local/lib/libcrypto.so.57 /usr/local/lib/libssl.so.60 bin/lib/ # for newer ssl (last tested 4.3.2)
     fi
 
