@@ -676,7 +676,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		if (ipsw_extract_build_manifest(client->ipsw, &client->build_manifest, &tss_enabled) < 0) {
 			logger(LL_ERROR, "Unable to extract BuildManifest from %s. Firmware file might be corrupt.\n", client->ipsw->path);
 			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
-				error("ERROR: Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
+				logger(LL_ERROR, "ERROR: Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
 				return -1;
 			}
 			isRestorePlist = 1;
@@ -878,17 +878,17 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			 */
 			plist_t p_ProductType = plist_dict_get_item(client->build_manifest, "ProductType");
 			if (!p_ProductType){
-				error("ERROR: Unable to get ProductType from Restore.plist\n");
+				logger(LL_ERROR, "ERROR: Unable to get ProductType from Restore.plist\n");
 			}else{
 				char *firmwareProductType = NULL;
 				plist_get_string_val(p_ProductType, &firmwareProductType);
 				if (!firmwareProductType){
-					error("ERROR: ProductType from Restore.plist is not of type PLIST_STRING\n");
+					logger(LL_ERROR, "ERROR: ProductType from Restore.plist is not of type PLIST_STRING\n");
 				}else{
 					irecv_error_t ierr = 0;
 					ierr = irecv_devices_get_device_by_product_type(firmwareProductType, &client->device);
 					if (ierr){
-						error("ERROR: Failed to identify device from ProductType\n");
+						logger(LL_ERROR, "ERROR: Failed to identify device from ProductType\n");
 					}
 					free(firmwareProductType);
 				}
