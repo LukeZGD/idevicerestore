@@ -4187,7 +4187,7 @@ int extract_macos_variant(plist_t build_identity, char** output)
 	return 0;
 }
 
-static char* extract_global_manifest_path(plist_t build_identity, char *variant)
+static char* extract_global_manifest_path(plist_t build_identity, const char* variant, const char* prefix, const char* suffix)
 {
 	plist_t build_info = plist_dict_get_item(build_identity, "Info");
 	if (!build_info) {
@@ -4202,33 +4202,51 @@ static char* extract_global_manifest_path(plist_t build_identity, char *variant)
 	}
 	char *device_class = NULL;
 	plist_get_string_val(device_class_node, &device_class);
+	if (!device_class) {
+		logger(LL_ERROR, "failed to get DeviceClass from build identity info\n");
+		return NULL;
+	}
 
-	char *macos_variant = NULL;
-	int ret;
-	if (variant) {
-		macos_variant = variant;
-	} else {
-		ret = extract_macos_variant(build_identity, &macos_variant);
-		if (ret != 0) {
+	char *owned_macos_variant = NULL;
+	const char *macos_variant = variant;
+	if (!macos_variant) {
+		if (extract_macos_variant(build_identity, &owned_macos_variant) != 0 || !owned_macos_variant) {
 			free(device_class);
 			return NULL;
 		}
+		macos_variant = owned_macos_variant;
 	}
 
-	// The path of the global manifest is hardcoded. There's no pointer to in the build manifest.
-	size_t psize = 42+strlen(macos_variant)+strlen(device_class)+1;
-	char *ticket_path = malloc(psize);
-	snprintf(ticket_path, psize, "Firmware/Manifests/restore/%s/apticket.%s.im4m", macos_variant, device_class);
+	// There is no path reference to the global manifest in the build manifest.
+	int length = snprintf(NULL, 0, "Firmware/Manifests/restore/%s/%s.%s%s.im4m", macos_variant, prefix, device_class, suffix);
+	if (length < 0) {
+		logger(LL_ERROR, "failed to format global manifest path\n");
+		free(device_class);
+		free(owned_macos_variant);
+		return NULL;
+	}
+	char *ticket_path = malloc((size_t)length + 1);
+	if (!ticket_path) {
+		logger(LL_ERROR, "Out of memory\n");
+		free(device_class);
+		free(owned_macos_variant);
+		return NULL;
+	}
+	if (snprintf(ticket_path, (size_t)length + 1, "Firmware/Manifests/restore/%s/%s.%s%s.im4m", macos_variant, prefix, device_class, suffix) != length) {
+		logger(LL_ERROR, "failed to format global manifest path\n");
+		free(ticket_path);
+		ticket_path = NULL;
+	}
 
 	free(device_class);
-	free(macos_variant);
+	free(owned_macos_variant);
 
 	return ticket_path;
 }
 
 int extract_global_manifest(struct idevicerestore_client_t* client, plist_t build_identity, char *variant, void** pbuffer, size_t* psize)
 {
-	char* ticket_path = extract_global_manifest_path(build_identity, variant);
+	char* ticket_path = extract_global_manifest_path(build_identity, variant, "apticket", "");
 	if (!ticket_path) {
 		logger(LL_ERROR, "failed to get global manifest path\n");
 		return -1;
@@ -4270,7 +4288,7 @@ static int _restore_send_file_data(struct _restore_send_file_data_ctx* rctx, con
 	plist_free(dict);
 
 	/* special handling for AEA image format */
-	if (done == 0 && (memcmp(data, "AEA1", 4) == 0)) {
+	if (data != NULL && size >= 4 && done == 0 && (memcmp(data, "AEA1", 4) == 0)) {
 		logger(LL_VERBOSE, "Encountered First Chunk in AEA image\n");
 		plist_t message = NULL;
 		property_list_service_error_t err = _restore_service_recv_timeout(rctx->service, &message, 3000);
@@ -4429,39 +4447,77 @@ int restore_send_source_boot_object_v4(struct idevicerestore_client_t* client, p
 		logger_dump_plist(LL_DEBUG, message, 1);
 	}
 
-	char *image_name = NULL;
-	plist_t node = plist_access_path(message, 2, "Arguments", "ImageName");
+	plist_t arguments = plist_dict_get_item(message, "Arguments");
+	if (!arguments || plist_get_node_type(arguments) != PLIST_DICT) {
+		logger(LL_DEBUG, "Failed to parse arguments from SourceBootObjectV4 plist\n");
+		return -1;
+	}
+	plist_t node = plist_dict_get_item(arguments, "ImageName");
 	if (!node || plist_get_node_type(node) != PLIST_STRING) {
 		logger(LL_DEBUG, "Failed to parse arguments from SourceBootObjectV4 plist\n");
 		return -1;
 	}
-	plist_get_string_val(node, &image_name);
+	const char *image_name = plist_get_string_ptr(node, NULL);
 	if (!image_name) {
 		logger(LL_DEBUG, "Failed to parse arguments from SourceBootObjectV4 as string\n");
 		return -1;
 	}
 
-	char *component = image_name;
+	const char *component = image_name;
 	// Fork from restore_send_component
 	//
 	char *path = NULL;
+	int path_optional = 0;
 
 	logger(LL_INFO, "About to send %s...\n", component);
 
 	if (strcmp(image_name, "__GlobalManifest__") == 0) {
-		char *variant = NULL;
-		plist_t node = plist_access_path(message, 2, "Arguments", "Variant");
+		plist_t build_identity = restore_get_build_identity_from_request(client, message);
+		if (!build_identity) {
+			logger(LL_ERROR, "Unable to find a matching build identity\n");
+			return -1;
+		}
+
+		node = plist_dict_get_item(arguments, "Variant");
 		if (!node || plist_get_node_type(node) != PLIST_STRING) {
 			logger(LL_DEBUG, "Failed to parse arguments from SourceBootObjectV4 plist\n");
 			return -1;
 		}
-		plist_get_string_val(node, &variant);
+		const char *variant = plist_get_string_ptr(node, NULL);
 		if (!variant) {
 			logger(LL_DEBUG, "Failed to parse arguments from SourceBootObjectV4 as string\n");
 			return -1;
 		}
 
-		path = extract_global_manifest_path(client->restore->build_identity, variant);
+		const char *prefix = "apticket";
+		node = plist_dict_get_item(arguments, "GlobalManifestPrefix");
+		if (node && plist_get_node_type(node) == PLIST_STRING) {
+			const char *value = plist_get_string_ptr(node, NULL);
+			if (value) {
+				prefix = value;
+			}
+		}
+
+		const char *suffix = "";
+		node = plist_dict_get_item(arguments, "GlobalManifestSuffix");
+		if (node && plist_get_node_type(node) == PLIST_STRING) {
+			const char *value = plist_get_string_ptr(node, NULL);
+			if (value) {
+				suffix = value;
+			}
+		}
+
+		path = extract_global_manifest_path(build_identity, variant, prefix, suffix);
+		if (!path) {
+			logger(LL_ERROR, "Failed to get global manifest path\n");
+			return -1;
+		}
+		if (!ipsw_file_exists(client->ipsw, path)) {
+			free(path);
+			path = NULL;
+		}
+		path_optional = !plist_access_path(build_identity, 2, "Info", "VariantSupportsGlobalSigning")
+			|| plist_dict_get_bool(arguments, "GlobalManifestOptional");
 	} else if (strcmp(image_name, "__RestoreVersion__") == 0) {
 		path = strdup("RestoreVersion.plist");
 	} else if (strcmp(image_name, "__SystemVersion__") == 0) {
@@ -4482,21 +4538,22 @@ int restore_send_source_boot_object_v4(struct idevicerestore_client_t* client, p
 		}
 	}
 
-	if (!path) {
+	if (!path && !path_optional) {
 		logger(LL_ERROR, "Failed to get path for component %s\n", component);
 		return -1;
 	}
 
 	uint64_t fsize = 0;
-	ipsw_get_file_size(client->ipsw, path, &fsize);
+	if (path) {
+		ipsw_get_file_size(client->ipsw, path, &fsize);
+	}
 
 	restore_service_client_t service = _restore_get_service_client_for_data_request(client, message);
 	if (!service) {
+		free(path);
 		logger(LL_ERROR, "%s: Unable to connect to service client\n", __func__);
 		return -1;
 	}
-
-	logger(LL_INFO, "Sending %s now (%" PRIu64 " bytes)\n", component, fsize);
 
 	struct _restore_send_file_data_ctx rctx;
 	rctx.client = client;
@@ -4504,19 +4561,31 @@ int restore_send_source_boot_object_v4(struct idevicerestore_client_t* client, p
 	rctx.last_progress = 0;
 	rctx.tag = progress_get_next_tag();
 
-	register_progress(rctx.tag, component);
-
-	if (ipsw_extract_send(client->ipsw, path, 8192, (ipsw_send_cb)_restore_send_file_data, &rctx) < 0) {
+	int sent_file = path != NULL;
+	int ret;
+	if (sent_file) {
+		logger(LL_INFO, "Sending %s now (%" PRIu64 " bytes)\n", component, fsize);
+		register_progress(rctx.tag, component);
+		ret = ipsw_extract_send(client->ipsw, path, 8192, (ipsw_send_cb)_restore_send_file_data, &rctx);
+	} else {
+		logger(LL_INFO, "Skipping missing optional component %s\n", component);
+		ret = _restore_send_file_data(&rctx, NULL, 0, 0, 0);
+	}
+	if (ret < 0) {
 		free(path);
 		_restore_service_free(service);
-		finalize_progress(rctx.tag);
+		if (sent_file) {
+			finalize_progress(rctx.tag);
+		}
 		logger(LL_ERROR, "Failed to send component %s\n", component);
 		return -1;
 	}
 	free(path);
 
 	_restore_service_free(service);
-	finalize_progress(rctx.tag);
+	if (sent_file) {
+		finalize_progress(rctx.tag);
+	}
 
 	logger(LL_INFO, "Done sending %s\n", component);
 	return 0;
