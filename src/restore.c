@@ -1606,11 +1606,16 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	size_t llb_size = 0;
 	void* llb_data = NULL;
 	plist_t dict = NULL;
+	char* filename = NULL;
 	size_t nor_size = 0;
 	void* nor_data = NULL;
 	plist_t norimage = NULL;
 	plist_t firmware_files = NULL;
+	plist_dict_iter iter = NULL;
+	uint32_t i;
+	uint32_t count;
 	int flash_version_1 = 0;
+	int ret = -1;
 
 	if (!client || !client->restore || !client->restore->build_identity) {
 		logger(LL_ERROR, "%s: idevicerestore client not initialized?!\n", __func__);
@@ -1620,7 +1625,7 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	logger(LL_INFO, "About to send NORData...\n");
 
 	plist_t arguments = plist_dict_get_item(message, "Arguments");
-	if (arguments && plist_get_node_type(arguments) == PLIST_DICT) {
+	if (arguments && PLIST_IS_DICT(arguments)) {
 		flash_version_1 = plist_dict_get_item(arguments, "FlashVersion1") ? 1 : 0;
 	}
 
@@ -1650,98 +1655,109 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	memset(manifest_file, '\0', sizeof(manifest_file));
 	snprintf(manifest_file, sizeof(manifest_file), "%s/manifest", firmware_path);
 
-	firmware_files = plist_new_dict();
 	if (ipsw_file_exists(client->ipsw, manifest_file)) {
 		ipsw_extract_to_memory(client->ipsw, manifest_file, &manifest_data, &manifest_size);
 	}
+
 	if (manifest_data && manifest_size > 0) {
+		firmware_files = plist_new_array();
 		logger(LL_INFO, "Getting firmware manifest from %s\n", manifest_file);
 		char *manifest_p = (char*)manifest_data;
-		char *filename = NULL;
 		while ((filename = strsep(&manifest_p, "\r\n")) != NULL) {
 			if (*filename == '\0') continue;
-			const char *compname = get_component_name(filename);
-			if (!compname) continue;
 			memset(firmware_filename, '\0', sizeof(firmware_filename));
 			snprintf(firmware_filename, sizeof(firmware_filename), "%s/%s", firmware_path, filename);
-			plist_dict_set_item(firmware_files, compname, plist_new_string(firmware_filename));
+			plist_array_append_item(firmware_files, plist_new_string(firmware_filename));
 		}
 		free(manifest_data);
 	} else {
+		firmware_files = plist_new_dict();
 		logger(LL_INFO, "Getting firmware manifest from build identity\n");
-		plist_dict_iter iter = NULL;
 		plist_t build_id_manifest = plist_dict_get_item(client->restore->build_identity, "Manifest");
 		if (build_id_manifest) {
 			plist_dict_new_iter(build_id_manifest, &iter);
 		}
 		if (iter) {
 			char *component = NULL;
-			plist_t manifest_entry;
-			do {
+			plist_t manifest_entry = NULL;
+			while (1) {
 				component = NULL;
 				manifest_entry = NULL;
 				plist_dict_next_item(build_id_manifest, iter, &component, &manifest_entry);
-				if (component && manifest_entry && plist_get_node_type(manifest_entry) == PLIST_DICT) {
+				if (!component) break;
+
+				if (manifest_entry && PLIST_IS_DICT(manifest_entry)) {
 					uint8_t is_fw = 0;
 					uint8_t is_secondary_fw = 0;
 					uint8_t loaded_by_iboot = 0;
 					plist_t fw_node;
 
 					fw_node = plist_access_path(manifest_entry, 2, "Info", "IsFirmwarePayload");
-					if (fw_node && plist_get_node_type(fw_node) == PLIST_BOOLEAN) {
+					if (fw_node && PLIST_IS_BOOLEAN(fw_node)) {
 						plist_get_bool_val(fw_node, &is_fw);
 					}
 
 					fw_node = plist_access_path(manifest_entry, 2, "Info", "IsLoadedByiBoot");
-					if (fw_node && plist_get_node_type(fw_node) == PLIST_BOOLEAN) {
+					if (fw_node && PLIST_IS_BOOLEAN(fw_node)) {
 						plist_get_bool_val(fw_node, &loaded_by_iboot);
 					}
 
 					fw_node = plist_access_path(manifest_entry, 2, "Info", "IsSecondaryFirmwarePayload");
-					if (fw_node && plist_get_node_type(fw_node) == PLIST_BOOLEAN) {
+					if (fw_node && PLIST_IS_BOOLEAN(fw_node)) {
 						plist_get_bool_val(fw_node, &is_secondary_fw);
 					}
 
 					if (is_fw || (is_secondary_fw && loaded_by_iboot)) {
 						plist_t comp_path = plist_access_path(manifest_entry, 2, "Info", "Path");
 						if (comp_path) {
-							plist_dict_set_item(firmware_files, component, plist_copy(comp_path));
+							char *path_str = NULL;
+							plist_get_string_val(comp_path, &path_str);
+							if (path_str) {
+								plist_dict_set_item(firmware_files, component, plist_new_string(path_str));
+								free(path_str);
+							}
 						}
 					}
 				}
 				free(component);
-			} while (manifest_entry);
+			}
 			free(iter);
+			iter = NULL;
 		}
 	}
 
-	if (plist_dict_get_size(firmware_files) == 0) {
+	count = PLIST_IS_DICT(firmware_files)  ? plist_dict_get_size(firmware_files)
+		: PLIST_IS_ARRAY(firmware_files) ? plist_array_get_size(firmware_files)
+		: 0;
+
+	if (count == 0) {
 		logger(LL_ERROR, "Unable to get list of firmware files.\n");
-		return -1;
+		goto error;
 	}
 
 	const char* component = "LLB";
 	void* component_data = NULL;
 	size_t component_size = 0;
-	int ret = extract_component(client->ipsw, llb_path, &component_data, &component_size);
-	free(llb_path);
-	if (ret < 0) {
+	if (extract_component(client->ipsw, llb_path, &component_data, &component_size) < 0) {
 		logger(LL_ERROR, "Unable to extract component: %s\n", component);
-		return -1;
+		free(llb_path);
+		goto error;
 	}
+	free(llb_path);
+	llb_path = NULL;
 
-	ret = personalize_component(client, component, component_data, component_size, client->tss, &llb_data, &llb_size);
+	if (personalize_component(client, component, component_data, component_size, client->tss, &llb_data, &llb_size) < 0) {
+		logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
+		free(component_data);
+		goto error;
+	}
 	free(component_data);
 	component_data = NULL;
-	component_size = 0;
-	if (ret < 0) {
-		logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
-		return -1;
-	}
 
 	dict = plist_new_dict();
 	plist_dict_set_item(dict, "LlbImageData", plist_new_data((char*)llb_data, llb_size));
 	free(llb_data);
+	llb_data = NULL;
 
 	if (flash_version_1) {
 		norimage = plist_new_dict();
@@ -1749,23 +1765,39 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 		norimage = plist_new_array();
 	}
 
-	plist_dict_iter iter = NULL;
-	plist_dict_new_iter(firmware_files, &iter);
-	while (iter) {
+	if (PLIST_IS_DICT(firmware_files)) {
+		plist_dict_new_iter(firmware_files, &iter);
+	}
+
+	for (i = 0; i < count; i++) {
 		char *comp = NULL;
-		plist_t pcomp = NULL;
-		plist_dict_next_item(firmware_files, iter, &comp, &pcomp);
-		if (!comp) {
-			break;
-		}
 		char *comppath = NULL;
-		plist_get_string_val(pcomp, &comppath);
+
+		if (iter) {
+			plist_t pcomp = NULL;
+			plist_dict_next_item(firmware_files, iter, &comp, &pcomp);
+			if (!comp) break;
+
+			component = comp;
+			plist_get_string_val(pcomp, &comppath);
+		} else {
+			plist_t pcomp = plist_array_get_item(firmware_files, i);
+			plist_get_string_val(pcomp, &comppath);
+			if (!comppath) continue;
+
+			char *fname = strrchr(comppath, '/');
+			if (!fname) {
+				free(comppath);
+				continue;
+			}
+			component = get_component_name(fname + 1);
+		}
+
 		if (!comppath) {
 			free(comp);
 			continue;
 		}
 
-		component = (const char*)comp;
 		if (!strcmp(component, "LLB") || !strcmp(component, "RestoreSEP")) {
 			// skip LLB, it's already passed in LlbImageData
 			// skip RestoreSEP, it's passed in RestoreSEPImageData
@@ -1778,35 +1810,32 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 		component_size = 0;
 
 		if (extract_component(client->ipsw, comppath, &component_data, &component_size) < 0) {
+			logger(LL_ERROR, "Unable to extract component: %s\n", component);
 			free(iter);
 			free(comp);
 			free(comppath);
-			plist_free(firmware_files);
-			logger(LL_ERROR, "Unable to extract component: %s\n", component);
-			return -1;
+			goto error;
 		}
 
 		if (personalize_component(client, component, component_data, component_size, client->tss, &nor_data, &nor_size) < 0) {
+			logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
 			free(iter);
 			free(comp);
 			free(comppath);
 			free(component_data);
-			plist_free(firmware_files);
-			logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
-			return -1;
+			goto error;
 		}
 		free(component_data);
 		component_data = NULL;
-		component_size = 0;
 
+		plist_t data_node = plist_new_data((char *)nor_data, nor_size);
 		if (flash_version_1) {
-			plist_dict_set_item(norimage, component, plist_new_data((char*)nor_data, nor_size));
+			plist_dict_set_item(norimage, component, data_node);
 		} else {
-			/* make sure iBoot is the first entry in the array */
 			if (!strncmp("iBoot", component, 5)) {
-				plist_array_insert_item(norimage, plist_new_data((char*)nor_data, nor_size), 0);
+				plist_array_insert_item(norimage, data_node, 0);
 			} else {
-				plist_array_append_item(norimage, plist_new_data((char*)nor_data, nor_size));
+				plist_array_append_item(norimage, data_node);
 			}
 		}
 
@@ -1814,110 +1843,73 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 		free(comppath);
 		free(nor_data);
 		nor_data = NULL;
-		nor_size = 0;
 	}
+
 	free(iter);
+	iter = NULL;
 	plist_free(firmware_files);
+	firmware_files = NULL;
+
 	plist_dict_set_item(dict, "NorImageData", norimage);
 
-	void* personalized_data = NULL;
-	size_t personalized_size = 0;
-
-	if (build_identity_has_component(client->restore->build_identity, "RestoreSEP") &&
-	    build_identity_get_component_path(client->restore->build_identity, "RestoreSEP", &restore_sep_path) == 0) {
-		component = "RestoreSEP";
-		ret = extract_component(client->ipsw, restore_sep_path, &component_data, &component_size);
-		free(restore_sep_path);
-		if (ret < 0) {
-			logger(LL_ERROR, "Unable to extract component: %s\n", component);
-			return -1;
+	/* Helper macro for repetitive SEP processing */
+	#define PROCESS_SEP_COMPONENT(comp_name, dict_key) \
+		if (build_identity_has_component(client->restore->build_identity, comp_name) && \
+			build_identity_get_component_path(client->restore->build_identity, comp_name, &sep_path) == 0) { \
+			void* p_data = NULL; \
+			size_t p_size = 0; \
+			if (extract_component(client->ipsw, sep_path, &component_data, &component_size) < 0) { \
+				logger(LL_ERROR, "Unable to extract component: %s\n", comp_name); \
+				free(sep_path); \
+				goto error; \
+			} \
+			free(sep_path); \
+			sep_path = NULL; \
+			if (personalize_component(client, comp_name, component_data, component_size, client->tss, &p_data, &p_size) < 0) { \
+				logger(LL_ERROR, "Unable to get personalized component: %s\n", comp_name); \
+				free(component_data); \
+				goto error; \
+			} \
+			free(component_data); \
+			component_data = NULL; \
+			plist_dict_set_item(dict, dict_key, plist_new_data((char*)p_data, p_size)); \
+			free(p_data); \
 		}
 
-		ret = personalize_component(client, component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
-		free(component_data);
-		component_data = NULL;
-		component_size = 0;
-		if (ret < 0) {
-			logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
-			return -1;
-		}
+	PROCESS_SEP_COMPONENT("RestoreSEP", "RestoreSEPImageData");
+	PROCESS_SEP_COMPONENT("SEP", "SEPImageData");
+	PROCESS_SEP_COMPONENT("SepStage1", "SEPPatchImageData");
 
-		plist_dict_set_item(dict, "RestoreSEPImageData", plist_new_data((char*)personalized_data, personalized_size));
-		free(personalized_data);
-		personalized_data = NULL;
-		personalized_size = 0;
-	}
+	#undef PROCESS_SEP_COMPONENT
 
-	if (build_identity_has_component(client->restore->build_identity, "SEP") &&
-	    build_identity_get_component_path(client->restore->build_identity, "SEP", &sep_path) == 0) {
-		component = "SEP";
-		ret = extract_component(client->ipsw, sep_path, &component_data, &component_size);
-		free(sep_path);
-		if (ret < 0) {
-			logger(LL_ERROR, "Unable to extract component: %s\n", component);
-			return -1;
-		}
-
-		ret = personalize_component(client, component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
-		free(component_data);
-		component_data = NULL;
-		component_size = 0;
-		if (ret < 0) {
-			logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
-			return -1;
-		}
-
-		plist_dict_set_item(dict, "SEPImageData", plist_new_data((char*)personalized_data, personalized_size));
-		free(personalized_data);
-		personalized_data = NULL;
-		personalized_size = 0;
-	}
-
-	if (build_identity_has_component(client->restore->build_identity, "SepStage1") &&
-	    build_identity_get_component_path(client->restore->build_identity, "SepStage1", &sep_path) == 0) {
-		component = "SepStage1";
-		ret = extract_component(client->ipsw, sep_path, &component_data, &component_size);
-		free(sep_path);
-		if (ret < 0) {
-			logger(LL_ERROR, "Unable to extract component: %s\n", component);
-			return -1;
-		}
-
-		ret = personalize_component(client, component, component_data, component_size, client->tss, &personalized_data, &personalized_size);
-		free(component_data);
-		component_data = NULL;
-		component_size = 0;
-		if (ret < 0) {
-			logger(LL_ERROR, "Unable to get personalized component: %s\n", component);
-			return -1;
-		}
-
-		plist_dict_set_item(dict, "SEPPatchImageData", plist_new_data((char*)personalized_data, personalized_size));
-		free(personalized_data);
-		personalized_data = NULL;
-		personalized_size = 0;
-	}
-
-	if (client->debug_level > 1)
+	if (client->debug_level > 1) {
 		logger_dump_plist(LL_DEBUG, dict, 0);
+	}
 
 	restore_service_client_t service = _restore_get_service_client_for_data_request(client, message);
 	if (!service) {
 		logger(LL_ERROR, "%s: Unable to connect to service client\n", __func__);
-		return -1;
+		goto error;
 	}
 
 	logger(LL_INFO, "Sending NORData now...\n");
 	restored_error_t restore_error = _restore_service_send(service, dict, 0);
-	plist_free(dict);
 	_restore_service_free(service);
+
 	if (restore_error != RESTORE_E_SUCCESS) {
 		logger(LL_ERROR, "Unable to send NORData\n");
-		return -1;
+		goto error;
 	}
 
 	logger(LL_INFO, "Done sending NORData\n");
-	return 0;
+	ret = 0;
+
+error:
+	if (dict) plist_free(dict);
+	if (firmware_files) plist_free(firmware_files);
+	free(llb_path);
+	free(sep_path);
+	return ret;
 }
 
 static const char* restore_get_bbfw_fn_for_element(const char* elem, uint32_t bb_chip_id)
