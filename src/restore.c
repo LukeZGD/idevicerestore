@@ -1614,7 +1614,6 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	plist_dict_iter iter = NULL;
 	uint32_t i;
 	uint32_t count;
-	int flash_version_1 = 0;
 	int ret = -1;
 
 	if (!client || !client->restore || !client->restore->build_identity) {
@@ -1623,11 +1622,6 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	}
 
 	logger(LL_INFO, "About to send NORData...\n");
-
-	plist_t arguments = plist_dict_get_item(message, "Arguments");
-	if (arguments && PLIST_IS_DICT(arguments)) {
-		flash_version_1 = plist_dict_get_item(arguments, "FlashVersion1") ? 1 : 0;
-	}
 
 	if (client->tss) {
 		if (tss_response_get_path_by_entry(client->tss, "LLB", &llb_path) < 0) {
@@ -1759,7 +1753,9 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	free(llb_data);
 	llb_data = NULL;
 
-	if (flash_version_1) {
+	if (client->build_major >= 20) {
+		// Starting with M1 macs, it seems that NorImageData is now a dict.
+		// Sending an array like previous versions results in restore success but the machine will SOS after rebooting.
 		norimage = plist_new_dict();
 	} else {
 		norimage = plist_new_array();
@@ -1829,7 +1825,7 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 		component_data = NULL;
 
 		plist_t data_node = plist_new_data((char *)nor_data, nor_size);
-		if (flash_version_1) {
+		if (client->build_major >= 20) {
 			plist_dict_set_item(norimage, component, data_node);
 		} else {
 			if (!strncmp("iBoot", component, 5)) {
