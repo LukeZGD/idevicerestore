@@ -5597,7 +5597,7 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t* client, p
 		case MAKE_STAGE(UNMOUNT_FILESYSTEMS,1):
 			*v7_restore_stage = MAKE_STAGE(FLASH_FIRMWARE,0);
 			logger(LL_DEBUG, "Requesting Stage 0x%llx\n",*v7_restore_stage);
-			err = restore_send_nor(restore, client, build_identity, NULL);
+			err = restore_send_nor(client, message);
 			break;
 
 		case MAKE_STAGE(FLASH_FIRMWARE,0):
