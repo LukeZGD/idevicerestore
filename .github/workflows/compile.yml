@@ -1,8 +1,5 @@
 name: Compile idevicerestore
-on:
-  push:
-    branches:
-      - master
+on: [push]
 jobs:
   linux-limd:
     strategy:
@@ -22,17 +19,8 @@ jobs:
       - name: Run compile script
         run: ./compile.sh limd
 
-      - name: Zip libimobiledevice
-        run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
-
-      - name: Update latest release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload latest \
-            libimobiledevice_linux-${{ matrix.arch.name }}.zip \
-            --clobber -R ${{ github.repository }}
-
-          gh release edit latest \
-            --title "Latest" \
-            --target ${{ github.sha }} -R ${{ github.repository }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libimobiledevice_linux-${{ matrix.arch.name }}
+          path: bin
