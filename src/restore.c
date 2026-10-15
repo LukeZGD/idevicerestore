@@ -5439,7 +5439,7 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t* client, p
 	if (!p_response || plist_get_node_type(p_response) != PLIST_STRING) {
 		logger(LL_DEBUG, "Unknown message received:\n");
 		//if (idevicerestore_debug)
-		debug_plist(message);
+		logger_dump_plist(LL_DEBUG, message, 1);
 		return 0;
 	}
 
@@ -5462,7 +5462,7 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t* client, p
 		if (!p_status || plist_get_node_type(p_status) != PLIST_INT) {
 			logger(LL_ERROR, "Failed to get Complete status from message:\n");
 			//if (idevicerestore_debug)
-			debug_plist(message);
+			logger_dump_plist(LL_DEBUG, message, 1);
 		}
 		plist_get_int_val(p_status, &complete_status);
 		logger(LL_INFO, " done. (status %lld)\n",complete_status);
