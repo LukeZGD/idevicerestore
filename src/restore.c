@@ -5445,7 +5445,7 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t* client, p
 
 	if (!plist_string_val_compare(p_response, "Acknowledged")) {
 		if (*v7_restore_stage == RESTORE_IMAGE){
-			if(restore_send_filesystem(client, device, build_identity) < 0) {
+			if(restore_send_filesystem(client, message) < 0) {
 				logger(LL_ERROR, "ERROR: Unable to send filesystem\n");
 				err = -2;
 				client->flags |= FLAG_QUIT;
