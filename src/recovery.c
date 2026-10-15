@@ -36,6 +36,10 @@
 #include "restore.h"
 #include "recovery.h"
 
+#ifdef HAVE_LIBHFSPLUS
+#include "libhfsplus/hfs_patch_asr.h"
+#endif
+
 static int recovery_progress_callback(irecv_client_t client, const irecv_event_t* event)
 {
 	if (event->type == IRECV_PROGRESS) {
@@ -453,6 +457,94 @@ int recovery_send_loaded_by_iboot(struct idevicerestore_client_t* client, plist_
 	return (err) ? -1 : 0;
 }
 
+static uint32_t read_u32_le(const void *p)
+{
+	const unsigned char *b = (const unsigned char *)p;
+	return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+static int recovery_send_ramdisk_component(struct idevicerestore_client_t* client, plist_t build_identity, const char* component)
+{
+	unsigned int size = 0;
+	unsigned char* data = NULL;
+	char* path = NULL;
+	irecv_error_t err = 0;
+	
+	if (client->tss) {
+		if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
+			debug("NOTE: No path for component %s in TSS, will fetch from build_identity\n", component);
+		}
+	}
+	if (!path) {
+		if (build_identity_get_component_path(build_identity, component, &path) < 0) {
+			error("ERROR: Unable to get path for component '%s'\n", component);
+			free(path);
+			return -1;
+		}
+	}
+	
+	unsigned char* component_data = NULL;
+	unsigned int component_size = 0;
+	int ret = extract_component(client->ipsw, path, &component_data, &component_size);
+	free(path);
+	if (ret < 0) {
+		error("ERROR: Unable to extract component: %s\n", component);
+		return -1;
+	}
+	
+	if (client->flags & FLAG_TETHERED && client->is_32bit_soc == 1) {
+		if (client->build_major == 14) {
+#ifdef HAVE_LIBHFSPLUS
+			if (component_size < 0x40) {
+				error("ERROR: Too small component: %s\n", component);
+				return -1;
+			}
+			uint32_t img3__magic = read_u32_le(component_data);
+			uint32_t img3__ident = read_u32_le(component_data + 0x10);
+			uint32_t img3__DATA_dataLength = read_u32_le(component_data + 0x3c);
+			if (img3__magic == 0x496D6733u) {
+				info("Found image3\n");
+				if (img3__ident == 0x7264736Bu) {
+					info("Found rdsk\n");
+					if (component_size < img3__DATA_dataLength) {
+						error("ERROR: Wrong image3 struct: %s\n", component);
+						return -1;
+					}
+					void* ramdiskbuf = malloc(img3__DATA_dataLength);
+					memcpy(ramdiskbuf, component_data + 0x40, img3__DATA_dataLength);
+					if (!patchASR(ramdiskbuf, img3__DATA_dataLength)) {
+						info("Patch done!\n");
+						memcpy(component_data + 0x40, ramdiskbuf, img3__DATA_dataLength);
+					}
+				}
+			}
+#else
+			error("ERROR: Restoring to this version is not supported.\n");
+			return -1;
+#endif
+		}
+	}
+		
+	ret = personalize_component(client, component, component_data, component_size, client->tss, &data, &size);
+	free(component_data);
+	if (ret < 0) {
+		error("ERROR: Unable to get personalized component: %s\n", component);
+		return -1;
+	}
+	
+	info("Sending %s (%d bytes)...\n", component, size);
+	
+	// FIXME: Did I do this right????
+	err = irecv_send_buffer(client->recovery->client, data, size, 0);
+	free(data);
+	if (err != IRECV_E_SUCCESS) {
+		error("ERROR: Unable to send %s component: %s\n", component, irecv_strerror(err));
+		return -1;
+	}
+	
+	return 0;
+}
+
 int recovery_send_ramdisk(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	const char *component = "RestoreRamDisk";
@@ -470,7 +562,7 @@ int recovery_send_ramdisk(struct idevicerestore_client_t* client, plist_t build_
 	free(value);
 	value = NULL;
 
-	if (recovery_send_component(client, build_identity, component) < 0) {
+	if (recovery_send_ramdisk_component(client, build_identity, component) < 0) {
 		error("ERROR: Unable to send %s to device.\n", component);
 		return -1;
 	}

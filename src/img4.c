@@ -24,20 +24,32 @@
 
 #include <libtatsu/tss.h>
 
+#ifdef HAVE_TURDUS_MERULA
+#include <libimobiledevice-glue/sha.h>
+#include <libDER/libDER_config.h>
+#include <libDER/libDER.h>
+#include <libDER/DER_Decode.h>
+#include <libDER/DER_Encode.h>
+#include <libDER/asn1Types.h>
+#if (__linux__)
+#include <arpa/inet.h>
+#endif
+#endif
+
 #include "common.h"
 #include "img4.h"
 #include "endianness.h"
 
-#define ASN1_PRIVATE 0xc0
-#define ASN1_PRIMITIVE_TAG 0x1f
-#define ASN1_CONSTRUCTED 0x20
-#define ASN1_SEQUENCE 0x10
-#define ASN1_SET 0x11
-#define ASN1_CONTEXT_SPECIFIC 0x80
-#define ASN1_IA5_STRING 0x16
-#define ASN1_OCTET_STRING 0x04
-#define ASN1_INTEGER 0x02
-#define ASN1_BOOLEAN 0x01
+#define _ASN1_PRIVATE 0xc0
+#define _ASN1_PRIMITIVE_TAG 0x1f
+#define _ASN1_CONSTRUCTED 0x20
+#define _ASN1_SEQUENCE 0x10
+#define _ASN1_SET 0x11
+#define _ASN1_CONTEXT_SPECIFIC 0x80
+#define _ASN1_IA5_STRING 0x16
+#define _ASN1_OCTET_STRING 0x04
+#define _ASN1_INTEGER 0x02
+#define _ASN1_BOOLEAN 0x01
 
 #define IMG4_MAGIC "IMG4"
 #define IMG4_MAGIC_SIZE 4
@@ -139,10 +151,10 @@ static void asn1_write_priv_element(unsigned char **p, unsigned int *length, uns
 	int ttag = 0;
 	int tag = value;
 
-	i = ASN1_CONSTRUCTED;
-	i |= (0xFF & ASN1_PRIVATE);
+	i = _ASN1_CONSTRUCTED;
+	i |= (0xFF & _ASN1_PRIVATE);
 
-	(*p)[0] = i | ASN1_PRIMITIVE_TAG;
+	(*p)[0] = i | _ASN1_PRIMITIVE_TAG;
 	*p += 1;
 	*length += 1;
 
@@ -163,7 +175,7 @@ static void asn1_write_element(unsigned char **p, unsigned int *length, unsigned
 {
 	unsigned int this_len = 0;
 	switch (type) {
-	case ASN1_IA5_STRING: {
+	case _ASN1_IA5_STRING: {
 		char *str = (char*)data;
 		size_t len = (data_len < 0) ? strlen(str) : data_len;
 		asn1_write_element_header(type, len, p, &this_len);
@@ -172,14 +184,14 @@ static void asn1_write_element(unsigned char **p, unsigned int *length, unsigned
 		*p += len;
 		*length += len;
 	}	break;
-	case ASN1_OCTET_STRING: {
+	case _ASN1_OCTET_STRING: {
 		asn1_write_element_header(type, data_len, p, &this_len);
 		*length += this_len;
 		memcpy(*p, data, data_len);
 		*p += data_len;
 		*length += data_len;
 	}	break;
-	case ASN1_INTEGER: {
+	case _ASN1_INTEGER: {
 		uint64_t value = *(uint64_t*)data;
 		int value_size = asn1_calc_int_size(value);
 		asn1_write_element_header(type, value_size, p, &this_len);
@@ -187,14 +199,14 @@ static void asn1_write_element(unsigned char **p, unsigned int *length, unsigned
 		asn1_write_int_value(p, value, value_size);
 		*length += value_size;
 	}	break;
-	case ASN1_BOOLEAN: {
+	case _ASN1_BOOLEAN: {
 		unsigned int value = *(unsigned int*)data;
 		asn1_write_element_header(type, 1, p, &this_len);
 		*length += this_len;
 		asn1_write_int_value(p, value ? 0xFF : 0x00, 1);
 		*length += 1;
 	}	break;
-	case (ASN1_SET | ASN1_CONSTRUCTED): {
+	case (_ASN1_SET | _ASN1_CONSTRUCTED): {
 		asn1_write_element_header(type, data_len, p, &this_len);
 		*length += this_len;
 		if (data && data_len > 0) {
@@ -232,7 +244,7 @@ static const unsigned char *asn1_find_element(unsigned int index, unsigned char 
 	int i;
 
 	// verify data integrity
-	if (data[off++] != (ASN1_CONSTRUCTED | ASN1_SEQUENCE))
+	if (data[off++] != (_ASN1_CONSTRUCTED | _ASN1_SEQUENCE))
 		return NULL;
 
 	// check data size
@@ -382,6 +394,7 @@ static const char *_img4_get_component_tag(const char *compname)
 		{ "iBootTest", "itst" },
 		{ "rfta", "rfta" },
 		{ "rfts", "rfts" },
+		//{ "iBootTethered", "rlgo" },
 		{ NULL, NULL }
 	};
 	int i = 0;
@@ -421,7 +434,7 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 
 	info("Personalizing IMG4 component %s...\n", component_name);
 	/* first we need check if we have to change the tag for the given component */
-	const void *tag = asn1_find_element(1, ASN1_IA5_STRING, component_data);
+	const void *tag = asn1_find_element(1, _ASN1_IA5_STRING, component_data);
 	if (tag) {
 		debug("Tag found\n");
 		if (strcmp(component_name, "RestoreKernelCache") == 0) {
@@ -450,6 +463,14 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 			memcpy((void*)tag, "rtrx", 4);
 		} else if (strcmp(component_name, "Ap,RestorecL4") == 0) {
 			memcpy((void*)tag, "rxcl", 4);
+		} else if (strcmp(component_name, "iBootTethered") == 0) {
+			memcpy((void*)tag, "rlgo", 4);
+		} else if (strcmp(component_name, "iBootTethered2") == 0) {
+			memcpy((void*)tag, "ibss", 4);
+		} else if (strcmp(component_name, "iBoot32Tethered") == 0) {
+			memcpy((void*)tag, "ibob", 4);
+		} else if (strcmp(component_name, "SEPTethered") == 0) {
+			memcpy((void*)tag, "sepi", 4);
 		}
 	}
 
@@ -527,14 +548,14 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 			unsigned char inner_seq[16];
 			unsigned char *p_inner_seq = &inner_seq[0];
 			unsigned int inner_seq_hdr_len = 0;
-			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, ASN1_IA5_STRING, (void*)tag_name, -1);
-			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, ASN1_INTEGER, (void*)&tag_value, -1);
+			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, _ASN1_IA5_STRING, (void*)tag_name, -1);
+			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, _ASN1_INTEGER, (void*)&tag_value, -1);
 
 			// write anid/snid sequence
 			unsigned char elem_seq[8];
 			unsigned char *p = &elem_seq[0];
 			unsigned int seq_hdr_len = 0;
-			asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_seq_hdr_len, &p, &seq_hdr_len);
+			asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_seq_hdr_len, &p, &seq_hdr_len);
 
 			// add size to priv anid/snid element
 			asn1_write_size(inner_seq_hdr_len + seq_hdr_len, &p_im4rset, &im4rlen);
@@ -557,14 +578,14 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 			unsigned char inner_seq[16];
 			unsigned char *p_inner_seq = &inner_seq[0];
 			unsigned int inner_seq_hdr_len = 0;
-			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, ASN1_IA5_STRING, (void*)"ucon", -1);
-			asn1_write_element_header(ASN1_OCTET_STRING, ucon_size, &p_inner_seq, &inner_seq_hdr_len);
+			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, _ASN1_IA5_STRING, (void*)"ucon", -1);
+			asn1_write_element_header(_ASN1_OCTET_STRING, ucon_size, &p_inner_seq, &inner_seq_hdr_len);
 
 			// write ucon sequence
 			unsigned char elem_seq[8];
 			unsigned char *p = &elem_seq[0];
 			unsigned int seq_hdr_len = 0;
-			asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_seq_hdr_len + ucon_size, &p, &seq_hdr_len);
+			asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_seq_hdr_len + ucon_size, &p, &seq_hdr_len);
 
 			// add size to priv ucon element
 			asn1_write_size(inner_seq_hdr_len + ucon_size + seq_hdr_len, &p_im4rset, &im4rlen);
@@ -591,14 +612,14 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 			unsigned char inner_seq[16];
 			unsigned char *p_inner_seq = &inner_seq[0];
 			unsigned int inner_seq_hdr_len = 0;
-			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, ASN1_IA5_STRING, (void*)"ucer", -1);
-			asn1_write_element_header(ASN1_OCTET_STRING, ucer_size, &p_inner_seq, &inner_seq_hdr_len);
+			asn1_write_element(&p_inner_seq, &inner_seq_hdr_len, _ASN1_IA5_STRING, (void*)"ucer", -1);
+			asn1_write_element_header(_ASN1_OCTET_STRING, ucer_size, &p_inner_seq, &inner_seq_hdr_len);
 
 			// write ucer sequence
 			unsigned char elem_seq[8];
 			unsigned char *p = &elem_seq[0];
 			unsigned int seq_hdr_len = 0;
-			asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_seq_hdr_len + ucer_size, &p, &seq_hdr_len);
+			asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_seq_hdr_len + ucer_size, &p, &seq_hdr_len);
 
 			// add size to priv ucer element
 			asn1_write_size(inner_seq_hdr_len + ucer_size + seq_hdr_len, &p_im4rset, &im4rlen);
@@ -622,25 +643,25 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 		unsigned char inner_set_[8];
 		unsigned char *inner_set = &inner_set_[0];
 		unsigned int inner_set_len = 0;
-		asn1_write_element_header(ASN1_SET | ASN1_CONSTRUCTED, im4rlen, &inner_set, &inner_set_len);
+		asn1_write_element_header(_ASN1_SET | _ASN1_CONSTRUCTED, im4rlen, &inner_set, &inner_set_len);
 
 		/* write header values */
 		unsigned char hdrdata_[16];
 		unsigned char *hdrdata = &hdrdata_[0];
 		unsigned int hdrdata_len = 0;
-		asn1_write_element(&hdrdata, &hdrdata_len, ASN1_IA5_STRING, (void*)"IM4R", -1);
+		asn1_write_element(&hdrdata, &hdrdata_len, _ASN1_IA5_STRING, (void*)"IM4R", -1);
 
 		/* write sequence now that we know the entire size */
 		unsigned char seq_[8];
 		unsigned char *seq = &seq_[0];
 		unsigned int seq_len = 0;
-		asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, im4rlen + inner_set_len + hdrdata_len, &seq, &seq_len);
+		asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, im4rlen + inner_set_len + hdrdata_len, &seq, &seq_len);
 
 		/* write outer cont[1] */
 		unsigned char cont_[8];
 		unsigned char *cont = &cont_[0];
 		unsigned int cont_len = 0;
-		asn1_write_element_header(ASN1_CONTEXT_SPECIFIC | ASN1_CONSTRUCTED | 1, im4rlen + inner_set_len + hdrdata_len + seq_len, &cont, &cont_len);
+		asn1_write_element_header(_ASN1_CONTEXT_SPECIFIC | _ASN1_CONSTRUCTED | 1, im4rlen + inner_set_len + hdrdata_len + seq_len, &cont, &cont_len);
 
 		// now put everything together
 		additional_data = malloc(im4rlen + inner_set_len + hdrdata_len + seq_len + cont_len);
@@ -661,15 +682,15 @@ int img4_stitch_component(const char* component_name, const unsigned char* compo
 	}
 
 	// create element header for the "IMG4" magic
-	asn1_create_element_header(ASN1_IA5_STRING, IMG4_MAGIC_SIZE, &magic_header, &magic_header_size);
+	asn1_create_element_header(_ASN1_IA5_STRING, IMG4_MAGIC_SIZE, &magic_header, &magic_header_size);
 	// create element header for the blob (ApImg4Ticket)
-	asn1_create_element_header(ASN1_CONTEXT_SPECIFIC|ASN1_CONSTRUCTED, blob_size, &blob_header, &blob_header_size);
+	asn1_create_element_header(_ASN1_CONTEXT_SPECIFIC|_ASN1_CONSTRUCTED, blob_size, &blob_header, &blob_header_size);
 
 	// calculate the size for the final IMG4 file (asn1 sequence)
 	content_size = magic_header_size + IMG4_MAGIC_SIZE + component_size + blob_header_size + blob_size + additional_size;
 
 	// create element header for the final IMG4 asn1 blob
-	asn1_create_element_header(ASN1_SEQUENCE|ASN1_CONSTRUCTED, content_size, &img4header, &img4header_size);
+	asn1_create_element_header(_ASN1_SEQUENCE|_ASN1_CONSTRUCTED, content_size, &img4header, &img4header_size);
 
 	outbuf = (unsigned char*)malloc(img4header_size + content_size);
 	if (!outbuf) {
@@ -739,16 +760,16 @@ static void _manifest_write_key_value(unsigned char **p, unsigned int *length, c
 	unsigned char *outer_start = *p + 5;
 	unsigned char *inner_start = *p + 5 + 6;
 	unsigned int inner_length = 0;
-	asn1_write_element(&inner_start, &inner_length, ASN1_IA5_STRING, (void*)tag, -1);
+	asn1_write_element(&inner_start, &inner_length, _ASN1_IA5_STRING, (void*)tag, -1);
 	asn1_write_element(&inner_start, &inner_length, type, value, size);
 
 	unsigned int outer_length = 0;
 	unsigned int this_length = 0;
 	if (!value && size > 0) {
-		asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_length + size, &outer_start, &outer_length);
+		asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_length + size, &outer_start, &outer_length);
 		asn1_write_size(outer_length + inner_length + size, &start, &this_length);
 	} else {
-		asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_length, &outer_start, &outer_length);
+		asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_length, &outer_start, &outer_length);
 		asn1_write_size(outer_length + inner_length, &start, &this_length);
 	}
 
@@ -772,7 +793,7 @@ static void _manifest_write_component(unsigned char **p, unsigned int *length, c
 	unsigned char *outer_start = *p + 5;
 	unsigned char *inner_start = *p + 5 + 6;
 	unsigned int inner_length = 0;
-	asn1_write_element(&inner_start, &inner_length, ASN1_IA5_STRING, (void*)tag, -1);
+	asn1_write_element(&inner_start, &inner_length, _ASN1_IA5_STRING, (void*)tag, -1);
 
 	unsigned char tmp_[512] = { 0, };
 	unsigned int tmp_len = 0;
@@ -786,7 +807,7 @@ static void _manifest_write_component(unsigned char **p, unsigned int *length, c
 		uint64_t digest_len = 0;
 		const char *digest = plist_get_data_ptr(node, &digest_len);
 		if (digest_len > 0) {
-			_manifest_write_key_value(&tmp, &tmp_len, "DGST", ASN1_OCTET_STRING, (void*)digest, digest_len);
+			_manifest_write_key_value(&tmp, &tmp_len, "DGST", _ASN1_OCTET_STRING, (void*)digest, digest_len);
 		}
 	}
 
@@ -795,7 +816,7 @@ static void _manifest_write_component(unsigned char **p, unsigned int *length, c
 		boolval = 0;
 		plist_get_bool_val(node, &boolval);
 		unsigned int int_bool_val = boolval;
-		_manifest_write_key_value(&tmp, &tmp_len, "EKEY", ASN1_BOOLEAN, &int_bool_val, -1);
+		_manifest_write_key_value(&tmp, &tmp_len, "EKEY", _ASN1_BOOLEAN, &int_bool_val, -1);
 	}
 
 	node = plist_dict_get_item(comp, "EPRO");
@@ -803,7 +824,7 @@ static void _manifest_write_component(unsigned char **p, unsigned int *length, c
 		boolval = 0;
 		plist_get_bool_val(node, &boolval);
 		unsigned int int_bool_val = boolval;
-		_manifest_write_key_value(&tmp, &tmp_len, "EPRO", ASN1_BOOLEAN, &int_bool_val, -1);
+		_manifest_write_key_value(&tmp, &tmp_len, "EPRO", _ASN1_BOOLEAN, &int_bool_val, -1);
 	}
 
 	node = plist_dict_get_item(comp, "ESEC");
@@ -811,7 +832,7 @@ static void _manifest_write_component(unsigned char **p, unsigned int *length, c
 		boolval = 0;
 		plist_get_bool_val(node, &boolval);
 		unsigned int int_bool_val = boolval;
-		_manifest_write_key_value(&tmp, &tmp_len, "ESEC", ASN1_BOOLEAN, &int_bool_val, -1);
+		_manifest_write_key_value(&tmp, &tmp_len, "ESEC", _ASN1_BOOLEAN, &int_bool_val, -1);
 	}
 
 	node = plist_dict_get_item(comp, "TBMDigests");
@@ -827,17 +848,17 @@ static void _manifest_write_component(unsigned char **p, unsigned int *length, c
 		if (!tbmtag) {
 			error("ERROR: Unexpected TMBDigests for comp '%s'\n", tag);
 		} else {
-			_manifest_write_key_value(&tmp, &tmp_len, tbmtag, ASN1_OCTET_STRING, (void*)data, datalen);
+			_manifest_write_key_value(&tmp, &tmp_len, tbmtag, _ASN1_OCTET_STRING, (void*)data, datalen);
 		}
 	}
 
-	asn1_write_element_header(ASN1_SET | ASN1_CONSTRUCTED, tmp_len, &inner_start, &inner_length);
+	asn1_write_element_header(_ASN1_SET | _ASN1_CONSTRUCTED, tmp_len, &inner_start, &inner_length);
 	memcpy(inner_start, tmp_, tmp_len);
 	inner_start += tmp_len;
 	inner_length += tmp_len;
 
 	unsigned int outer_length = 0;
-	asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_length, &outer_start, &outer_length);
+	asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_length, &outer_start, &outer_length);
 
 	unsigned int this_length = 0;
 	asn1_write_size(outer_length + inner_length, &start, &this_length);
@@ -873,25 +894,25 @@ int img4_create_local_manifest(plist_t request, plist_t build_identity, plist_t*
 
 	/* write manifest properties */
 	uintval = plist_dict_get_uint(request, "ApBoardID");
-	_manifest_write_key_value(&tmp, &tmp_len, "BORD", ASN1_INTEGER, &uintval, -1);
+	_manifest_write_key_value(&tmp, &tmp_len, "BORD", _ASN1_INTEGER, &uintval, -1);
 
 	uintval = 0;
-	_manifest_write_key_value(&tmp, &tmp_len, "CEPO", ASN1_INTEGER, &uintval, -1);
+	_manifest_write_key_value(&tmp, &tmp_len, "CEPO", _ASN1_INTEGER, &uintval, -1);
 
 	uintval = plist_dict_get_uint(request, "ApChipID");
-	_manifest_write_key_value(&tmp, &tmp_len, "CHIP", ASN1_INTEGER, &uintval, -1);
+	_manifest_write_key_value(&tmp, &tmp_len, "CHIP", _ASN1_INTEGER, &uintval, -1);
 
 	boolval = plist_dict_get_bool(request, "ApProductionMode");
-	_manifest_write_key_value(&tmp, &tmp_len, "CPRO", ASN1_BOOLEAN, &boolval, -1);
+	_manifest_write_key_value(&tmp, &tmp_len, "CPRO", _ASN1_BOOLEAN, &boolval, -1);
 
 	boolval = 0;
-	_manifest_write_key_value(&tmp, &tmp_len, "CSEC", ASN1_BOOLEAN, &boolval, -1);
+	_manifest_write_key_value(&tmp, &tmp_len, "CSEC", _ASN1_BOOLEAN, &boolval, -1);
 
 	uintval = plist_dict_get_uint(request, "ApSecurityDomain");
-	_manifest_write_key_value(&tmp, &tmp_len, "SDOM", ASN1_INTEGER, &uintval, -1);
+	_manifest_write_key_value(&tmp, &tmp_len, "SDOM", _ASN1_INTEGER, &uintval, -1);
 
 	/* create manifest properties set */
-	_manifest_write_key_value(&p, &length, "MANP", ASN1_SET | ASN1_CONSTRUCTED, tmp_, tmp_len);
+	_manifest_write_key_value(&p, &length, "MANP", _ASN1_SET | _ASN1_CONSTRUCTED, tmp_, tmp_len);
 
 	plist_t component_manifest = NULL;
 	if (build_identity) {
@@ -933,27 +954,27 @@ int img4_create_local_manifest(plist_t request, plist_t build_identity, plist_t*
 	unsigned char manb_[32];
 	unsigned char *manb = &manb_[0];
 	unsigned int manb_len = 0;
-	_manifest_write_key_value(&manb, &manb_len, "MANB", ASN1_SET | ASN1_CONSTRUCTED, NULL, length);
+	_manifest_write_key_value(&manb, &manb_len, "MANB", _ASN1_SET | _ASN1_CONSTRUCTED, NULL, length);
 
 	/* write inner set */
 	unsigned char inner_set_[8];
 	unsigned char *inner_set = &inner_set_[0];
 	unsigned int inner_set_len = 0;
-	asn1_write_element_header(ASN1_SET | ASN1_CONSTRUCTED, length + manb_len, &inner_set, &inner_set_len);
+	asn1_write_element_header(_ASN1_SET | _ASN1_CONSTRUCTED, length + manb_len, &inner_set, &inner_set_len);
 
 	/* write header values */
 	unsigned char hdrdata_[16];
 	unsigned char *hdrdata = &hdrdata_[0];
 	unsigned int hdrdata_len = 0;
-	asn1_write_element(&hdrdata, &hdrdata_len, ASN1_IA5_STRING, (void*)"IM4M", -1);
+	asn1_write_element(&hdrdata, &hdrdata_len, _ASN1_IA5_STRING, (void*)"IM4M", -1);
 	uint64_t intval = 0;
-	asn1_write_element(&hdrdata, &hdrdata_len, ASN1_INTEGER, &intval, -1);
+	asn1_write_element(&hdrdata, &hdrdata_len, _ASN1_INTEGER, &intval, -1);
 
 	/* write outer sequence now that we know the entire size */
 	unsigned char seq_[8];
 	unsigned char *seq = &seq_[0];
 	unsigned int seq_len = 0;
-	asn1_write_element_header(ASN1_SEQUENCE | ASN1_CONSTRUCTED, inner_set_len + length + manb_len + hdrdata_len, &seq, &seq_len);
+	asn1_write_element_header(_ASN1_SEQUENCE | _ASN1_CONSTRUCTED, inner_set_len + length + manb_len + hdrdata_len, &seq, &seq_len);
 
 	unsigned int header_len = seq_len + hdrdata_len + inner_set_len + manb_len;
 
@@ -987,3 +1008,1061 @@ int img4_create_local_manifest(plist_t request, plist_t build_identity, plist_t*
 
 	return 0;
 }
+
+#ifdef HAVE_TURDUS_MERULA
+void img4_override_payload_tag(const char* component_name, const unsigned char* component_data)
+{
+	const void *tag = asn1_find_element(1, _ASN1_IA5_STRING, component_data);
+	if (tag) {
+		debug("Tag found\n");
+		if (!strcmp(component_name, "RestoreKernelCache")) {
+			memcpy((void*)tag, "rkrn", 4);
+		}
+		if (!strcmp(component_name, "RestoreDeviceTree")) {
+			memcpy((void*)tag, "rdtr", 4);
+		}
+		if (!strcmp(component_name, "RestoreSEP")) {
+			memcpy((void*)tag, "rsep", 4);
+		}
+		if (!strcmp(component_name, "RestoreLogo")) {
+			memcpy((void*)tag, "rlgo", 4);
+		}
+		if (!strcmp(component_name, "RestoreTrustCache")) {
+			memcpy((void*)tag, "rtsc", 4);
+		}
+	}
+}
+
+static int get_img4_payload_tag(const char* component_name, const unsigned char* component_data, uint32_t* rv)
+{
+	const uint32_t *tag = (const uint32_t *)asn1_find_element(1, _ASN1_IA5_STRING, component_data);
+	if (tag) {
+		debug("Tag found\n");
+		*rv = ntohl(tag[0]);
+		return 0;
+	}
+	return -1;
+}
+
+static int get_img4_type_tag(const char* component_name, uint32_t* rv)
+{
+	uint32_t tag = 0;
+	const char* _tag = _img4_get_component_tag(component_name);
+	if (_tag == NULL) {
+		return -1;
+	}
+	
+	memcpy((void*)&tag, _tag, 4);
+	if (!strcmp(component_name, "OS")) {
+		memcpy((void*)&tag, "rosi", 4);
+	}
+	*rv = ntohl(tag);
+	return 0;
+}
+
+// xerub's img4lib
+#define E000000000000000 (ASN1_CONSTRUCTED | ASN1_PRIVATE)
+#define RESERVE_DIGEST_SPACE 20
+
+typedef struct {
+	DERItem item;
+	DERTag tag;
+} DERMonster;
+
+typedef struct {
+	DERItem magic;      // "IM4M"
+	DERItem version;    // 0
+	DERItem theset;     // MANB + MANP
+	DERItem sig_blob;   // RSA
+	DERItem chain_blob; // cert chain
+	DERItem img4_blob;
+	DERByte full_digest[RESERVE_DIGEST_SPACE];
+	DERByte theset_digest[RESERVE_DIGEST_SPACE];
+} TheImg4Manifest;
+
+const DERItemSpec DERImg4ManifestItemSpecs[5] = {
+	{ 0 * sizeof(DERItem), ASN1_IA5_STRING,                             0 },                    // "IM4M"
+	{ 1 * sizeof(DERItem), ASN1_INTEGER,                                0 },                    // 0
+	{ 2 * sizeof(DERItem), ASN1_CONSTR_SET,                             DER_DEC_SAVE_DER },     // SET(things)
+	{ 3 * sizeof(DERItem), ASN1_OCTET_STRING,                           0 },                    // RSA
+	{ 4 * sizeof(DERItem), ASN1_CONSTR_SEQUENCE,                        0 }                     // chain
+};
+
+static int DERImg4DecodeFindInSequence(unsigned char *a1, unsigned char *a2, DERTag tag, DERItem *a5)
+{
+	DERDecodedInfo currDecoded;
+	DERSequence derSeq;
+	
+	derSeq.nextItem = a1;
+	derSeq.end = a2;
+	
+	do {
+		int rv = DERDecodeSeqNext(&derSeq, &currDecoded);
+		if (rv) {
+			return rv;
+		}
+	} while (currDecoded.tag != tag);
+	
+	*a5 = currDecoded.content;
+	return 0;
+}
+
+static int DERImg4DecodeContentFindItemWithTag(const DERItem *a1, DERTag tag, DERItem *a4)
+{
+	int rv;
+	DERSequence derSeq;
+	
+	rv = DERDecodeSeqContentInit(a1, &derSeq);
+	if (rv) {
+		return rv;
+	}
+	return DERImg4DecodeFindInSequence(derSeq.nextItem, derSeq.end, tag, a4);
+}
+
+static int DERImg4DecodeTagCompare(const DERItem *a1, uint32_t nameTag)
+{
+	uint32_t var_14;
+	
+	if (a1->length < 4) {
+		return -1;
+	}
+	if (a1->length > 4) {
+		return 1;
+	}
+	
+	if (DERParseInteger(a1, &var_14)) {
+		return -2;
+	}
+	
+	if (var_14 < nameTag) {
+		return -1;
+	}
+	if (var_14 > nameTag) {
+		return 1;
+	}
+	return 0;
+}
+
+static int DERImg4DecodeManifest(const DERItem *a1, TheImg4Manifest *a2)
+{
+	int rv;
+	uint32_t var_14;
+	
+	if (a1 == NULL || a2 == NULL) {
+		return DR_ParamErr;
+	}
+	if (a1->data == NULL || a1->length == 0) {
+		return 0;
+	}
+	
+	rv = DERParseSequence(a1, 5, DERImg4ManifestItemSpecs, a2, 0);
+	if (rv) {
+		return rv;
+	}
+	
+	if (DERImg4DecodeTagCompare(&a2->magic, 'IM4M')) {
+		return DR_UnexpectedTag;
+	}
+	
+	rv = DERParseInteger(&a2->version, &var_14);
+	if (rv) {
+		return rv;
+	}
+	
+	if (var_14) {
+		return DR_UnexpectedTag;
+	}
+	return 0;
+}
+
+static int DERImg4DecodeProperty(const DERItem *a1, DERTag etag, DERMonster *a4)
+{
+	int rv;
+	uint32_t var_6C;
+	DERTag tag;
+	DERSequence var_60;
+	DERDecodedInfo var_50;
+	DERDecodedInfo var_38;
+	
+	if (a1 == NULL || a4 == NULL) {
+		return DR_ParamErr;
+	}
+	
+	rv = DERDecodeSeqInit(a1, &tag, &var_60);
+	if (rv) {
+		return rv;
+	}
+	
+	if (tag != ASN1_CONSTR_SEQUENCE) {
+		return DR_UnexpectedTag;
+	}
+	
+	rv = DERDecodeSeqNext(&var_60, &var_38);
+	if (rv) {
+		return rv;
+	}
+	
+	if (var_38.tag != ASN1_IA5_STRING) {
+		return DR_UnexpectedTag;
+	}
+	
+	rv = DERParseInteger(&var_38.content, &var_6C);
+	if (rv) {
+		return rv;
+	}
+	
+	if ((E000000000000000 | var_6C) != etag) {
+		return DR_UnexpectedTag;
+	}
+	
+	a4[0].item = var_38.content;
+	
+	rv = DERDecodeSeqNext(&var_60, &var_50);
+	if (rv) {
+		return rv;
+	}
+	
+	a4[1].tag = var_50.tag;
+	a4[1].item = var_50.content;
+	
+	rv = DERDecodeSeqNext(&var_60, &var_50);
+	if (rv != DR_EndOfSequence) {
+		return DR_UnexpectedTag;
+	}
+	return 0;
+}
+
+static int DERImg4DecodeFindProperty(const DERItem *a1, DERTag etag, DERTag atag, DERMonster *dest)
+{
+	int rv;
+	DERItemSpec var_70[2];
+	uint32_t var_3C;
+	DERItem var_38;
+	
+	rv = DERImg4DecodeContentFindItemWithTag(a1, etag, &var_38);
+	if (rv) {
+		return rv;
+	}
+	
+	var_70[0].offset = 0;
+	var_70[0].tag = ASN1_IA5_STRING;
+	var_70[0].options = 0;
+	var_70[1].offset = sizeof(DERMonster);
+	var_70[1].tag = atag;
+	var_70[1].options = 0;
+	
+	rv = DERParseSequence(&var_38, 2, var_70, dest, 0);
+	if (rv) {
+		return rv;
+	}
+	
+	rv = DERParseInteger(&dest[0].item, &var_3C);
+	if (rv) {
+		return rv;
+	}
+	
+	if ((E000000000000000 | var_3C) != etag) {
+		return DR_UnexpectedTag;
+	}
+	
+	dest[0].tag = etag | E000000000000000;
+	dest[1].tag = atag;
+	return 0;
+}
+
+static int Img4DecodeGetPropertyData(const DERItem *a1, DERTag tag, DERByte **a4, DERSize *a5)
+{
+	int rv;
+	DERItem var_50;
+	DERMonster var_40[2];
+	
+	var_50.data = a1->data;
+	var_50.length = a1->length;
+	
+	rv = DERImg4DecodeProperty(&var_50, E000000000000000 | tag, var_40);
+	if (rv) {
+		return rv;
+	}
+	
+	if (var_40[1].tag != ASN1_OCTET_STRING) {
+		return DR_UnexpectedTag;
+	}
+	
+	*a4 = var_40[1].item.data;
+	*a5 = var_40[1].item.length;
+	return 0;
+}
+
+int Img4DecodeGetPropertyInteger64(const DERItem *a1, DERTag tag, uint64_t *value)
+{
+	int rv;
+	DERItem var_50;
+	DERMonster var_40[2];
+	
+	var_50.data = a1->data;
+	var_50.length = a1->length;
+	
+	rv = DERImg4DecodeProperty(&var_50, E000000000000000 | tag, var_40);
+	if (rv) {
+		return rv;
+	}
+	
+	if (var_40[1].tag != ASN1_INTEGER) {
+		return DR_UnexpectedTag;
+	}
+	
+	return DERParseInteger64(&var_40[1].item, value);
+}
+
+static int Img4ManifestGetDigest(const TheImg4Manifest *m, const unsigned int type, DERByte** hash, DERSize *hash_len)
+{
+	int rv;
+	DERDecodedInfo var_88;
+	DERMonster var_70[2];
+	DERItem manb, manp, objp;
+	
+	rv = DERDecodeItem(&m->theset, &var_88);
+	if (rv) {
+		return rv;
+	}
+	if (var_88.tag != ASN1_CONSTR_SET) {
+		return -1;
+	}
+	
+	rv = DERImg4DecodeFindProperty(&var_88.content, (DERTag)(E000000000000000 | 'MANB'), ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	manb = var_70[1].item;
+	
+	rv = DERImg4DecodeFindProperty(&manb, (DERTag)(E000000000000000 | 'MANP'), ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	manp = var_70[1].item;
+	
+	rv = DERImg4DecodeFindProperty(&manb, E000000000000000 | type, ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	objp = var_70[1].item;
+	
+	DERMonster var_98[2];
+	DERItem var_68;
+	DERSequence var_58;
+	DERDecodedInfo var_48;
+	rv = DERDecodeSeqContentInit(&objp, &var_58);
+	if (rv) {
+		return rv;
+	}
+	
+	while (1) {
+		rv = DERDecodeSeqNext(&var_58, &var_48);
+		if (rv == DR_EndOfSequence) {
+			return 0;
+		}
+		if (rv) {
+			return rv;
+		}
+		rv = DERImg4DecodeProperty(&var_48.content, var_48.tag, var_98);
+		if (rv) {
+			return rv;
+		}
+		
+		if (var_98[1].tag != ASN1_OCTET_STRING && var_98[1].tag != ASN1_INTEGER && var_98[1].tag != ASN1_BOOLEAN) {
+			return DR_UnexpectedTag;
+		}
+		
+		if ((var_48.tag & E000000000000000) == 0) {
+			return DR_UnexpectedTag;
+		}
+		
+		var_68.data = var_48.content.data;
+		var_68.length = var_48.content.length;
+		
+		if ((unsigned int)var_48.tag == 'DGST') {
+			DERSize var_1C;
+			DERByte *var_18;
+			rv = Img4DecodeGetPropertyData(&var_68, var_48.tag, &var_18, &var_1C);
+			if (rv) {
+				return rv;
+			}
+			
+			size_t _hash_len = var_1C;
+			uint8_t* _hash = malloc(var_1C);
+			if (!_hash) {
+				error("ERROR: malloc failed\n");
+				return -40;
+			}
+			memcpy(_hash, var_18, var_1C);
+			var_18 = NULL;
+			var_1C = 0;
+			
+			uint8_t* my_hash = (uint8_t*)_hash;
+			debug("manifest DGST: ");
+			for (int i = 0; i < _hash_len; i++) {
+				debug("%02x", my_hash[i]);
+			}
+			debug("\n");
+			
+			if (hash) *hash = _hash;
+			if (hash_len) *hash_len = _hash_len;
+			return 0;
+		}
+		return -41;
+	}
+	return -42;
+}
+
+static int Img4ManifestGetBootNonceHash(const TheImg4Manifest *m, DERByte** hash, DERSize *hash_len)
+{
+	int rv;
+	DERDecodedInfo var_88;
+	DERMonster var_70[2];
+	DERItem manb, manp, objp;
+	
+	rv = DERDecodeItem(&m->theset, &var_88);
+	if (rv) {
+		return rv;
+	}
+	if (var_88.tag != ASN1_CONSTR_SET) {
+		return -1;
+	}
+	
+	rv = DERImg4DecodeFindProperty(&var_88.content, (DERTag)(E000000000000000 | 'MANB'), ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	manb = var_70[1].item;
+	
+	rv = DERImg4DecodeFindProperty(&manb, (DERTag)(E000000000000000 | 'MANP'), ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	manp = var_70[1].item;
+
+	objp = manp;
+	DERMonster var_98[2];
+	DERItem var_68;
+	DERSequence var_58;
+	DERDecodedInfo var_48;
+	rv = DERDecodeSeqContentInit(&objp, &var_58);
+	if (rv) {
+		return rv;
+	}
+	
+	while (1) {
+		rv = DERDecodeSeqNext(&var_58, &var_48);
+		if (rv == DR_EndOfSequence) {
+			return 0;
+		}
+		if (rv) {
+			return rv;
+		}
+		rv = DERImg4DecodeProperty(&var_48.content, var_48.tag, var_98);
+		if (rv) {
+			return rv;
+		}
+		
+		if (var_98[1].tag != ASN1_OCTET_STRING && var_98[1].tag != ASN1_INTEGER && var_98[1].tag != ASN1_BOOLEAN) {
+			return DR_UnexpectedTag;
+		}
+		
+		if ((var_48.tag & E000000000000000) == 0) {
+			return DR_UnexpectedTag;
+		}
+		
+		var_68.data = var_48.content.data;
+		var_68.length = var_48.content.length;
+		
+		if ((unsigned int)var_48.tag == 'BNCH') {
+			DERSize var_1C;
+			DERByte *var_18;
+			rv = Img4DecodeGetPropertyData(&var_68, var_48.tag, &var_18, &var_1C);
+			if (rv) {
+				return rv;
+			}
+			
+			size_t _hash_len = var_1C;
+			uint8_t* _hash = malloc(var_1C);
+			if (!_hash) {
+				error("ERROR: malloc failed\n");
+				return -40;
+			}
+			memcpy(_hash, var_18, var_1C);
+			var_18 = NULL;
+			var_1C = 0;
+			
+			uint8_t* my_hash = (uint8_t*)_hash;
+			debug("manifest BNCH: ");
+			for (int i = 0; i < _hash_len; i++) {
+				debug("%02x", my_hash[i]);
+			}
+			debug("\n");
+			
+			if (hash) *hash = _hash;
+			if (hash_len) *hash_len = _hash_len;
+			return 0;
+		}
+	}
+	return -42;
+}
+
+static int Img4ManifestGetECID(const TheImg4Manifest *m, uint64_t* ecid)
+{
+	int rv;
+	DERDecodedInfo var_88;
+	DERMonster var_70[2];
+	DERItem manb, manp, objp;
+	
+	rv = DERDecodeItem(&m->theset, &var_88);
+	if (rv) {
+		return rv;
+	}
+	if (var_88.tag != ASN1_CONSTR_SET) {
+		return -1;
+	}
+	
+	rv = DERImg4DecodeFindProperty(&var_88.content, (DERTag)(E000000000000000 | 'MANB'), ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	manb = var_70[1].item;
+	
+	rv = DERImg4DecodeFindProperty(&manb, (DERTag)(E000000000000000 | 'MANP'), ASN1_CONSTR_SET, var_70);
+	if (rv) {
+		return rv;
+	}
+	manp = var_70[1].item;
+	
+	objp = manp;
+	DERMonster var_98[2];
+	DERItem var_68;
+	DERSequence var_58;
+	DERDecodedInfo var_48;
+	rv = DERDecodeSeqContentInit(&objp, &var_58);
+	if (rv) {
+		return rv;
+	}
+	
+	while (1) {
+		rv = DERDecodeSeqNext(&var_58, &var_48);
+		if (rv == DR_EndOfSequence) {
+			return 0;
+		}
+		if (rv) {
+			return rv;
+		}
+		rv = DERImg4DecodeProperty(&var_48.content, var_48.tag, var_98);
+		if (rv) {
+			return rv;
+		}
+		
+		if (var_98[1].tag != ASN1_OCTET_STRING && var_98[1].tag != ASN1_INTEGER && var_98[1].tag != ASN1_BOOLEAN) {
+			return DR_UnexpectedTag;
+		}
+		
+		if ((var_48.tag & E000000000000000) == 0) {
+			return DR_UnexpectedTag;
+		}
+		
+		var_68.data = var_48.content.data;
+		var_68.length = var_48.content.length;
+		
+		if ((unsigned int)var_48.tag == 'ECID') {
+			uint64_t var_18 = 0;
+			rv = Img4DecodeGetPropertyInteger64(&var_68, var_48.tag, &var_18);
+			if (rv) {
+				return rv;
+			}
+			debug("manifest ECID: %016" PRIx64 "\n", var_18);
+			if (ecid) *ecid = var_18;
+			return 0;
+		}
+	}
+	return -42;
+}
+
+static int get_im4p_hash(struct idevicerestore_client_t* client, const char *compname,
+						 const uint8_t* payload, const size_t payload_len,
+						 uint8_t** hash, size_t* hash_len)
+{
+	uint8_t* _hash = NULL;
+	size_t _hash_len = 0;
+	
+	if (client->cpid == 0x8010 || client->cpid == 0x8011) {
+		unsigned char tsha384[SHA384_DIGEST_LENGTH];
+		memset(tsha384, 0, SHA384_DIGEST_LENGTH);
+		sha384_context sha384ctx;
+		sha384_init(&sha384ctx);
+		sha384_update(&sha384ctx, payload, payload_len);
+		sha384_final(&sha384ctx, tsha384);
+		_hash_len = SHA384_DIGEST_LENGTH;
+		_hash = malloc(_hash_len);
+		if (!_hash) {
+			error("ERROR: malloc failed\n");
+			return -1;
+		}
+		memset(_hash, 0, _hash_len);
+		memcpy(_hash, tsha384, SHA384_DIGEST_LENGTH);
+	}
+	else if (client->cpid == 0x7000 || client->cpid == 0x7001 || client->cpid == 0x8000 || client->cpid == 0x8001 || client->cpid == 0x8003) {
+		unsigned char tsha1[SHA1_DIGEST_LENGTH];
+		memset(tsha1, 0, SHA1_DIGEST_LENGTH);
+		sha1_context sha1ctx;
+		sha1_init(&sha1ctx);
+		sha1_update(&sha1ctx, payload, payload_len);
+		sha1_final(&sha1ctx, tsha1);
+		_hash_len = SHA1_DIGEST_LENGTH;
+		_hash = malloc(_hash_len);
+		if (!_hash) {
+			error("ERROR: malloc failed\n");
+			return -1;
+		}
+		memset(_hash, 0, _hash_len);
+		memcpy(_hash, tsha1, SHA1_DIGEST_LENGTH);
+	}
+	else {
+		error("ERROR: Found unknown device\n");
+		return -1;
+	}
+	
+	uint8_t* my_hash = (uint8_t*)_hash;
+	debug("%s hash: ", compname);
+	for (int i = 0; i < _hash_len; i++) {
+		debug("%02x", my_hash[i]);
+	}
+	debug("\n");
+	
+	if (hash) *hash = _hash;
+	if (hash_len) *hash_len = _hash_len;
+	return 0;
+}
+
+int get_img4_digest_from_manifest(struct idevicerestore_client_t* client, plist_t build_identity, const char *compname,
+								  const uint8_t* manifest, const size_t manifest_len, uint8_t** hash, size_t* hash_len)
+{
+	int rv = -16;
+	
+	if (!client || !build_identity || !compname || !manifest || !manifest_len) {
+		return -16;
+	}
+	
+	uint8_t* mhash = NULL;
+	size_t mhash_len = 0;
+	uint32_t type = 0;
+	
+	if (!build_identity_has_component(build_identity, compname)) {
+		rv = -17;
+		goto err;
+	}
+	
+	if (get_img4_type_tag(compname, &type)) {
+		error("ERROR: Unable to get %s image4 type tag\n", compname);
+		rv = -18;
+		goto err;
+	}
+	
+	DERItem tmp = { .data = (DERByte *)manifest, .length = manifest_len };
+	TheImg4Manifest m;
+	if (DERImg4DecodeManifest(&tmp, &m)) {
+		error("ERROR: Failed to decode image4 manifest\n");
+		rv = -19;
+		goto err;
+	}
+	
+	if (Img4ManifestGetDigest(&m, type, (DERByte **)&mhash, (DERSize *)&mhash_len)) {
+		info("Failed to get digest from image4 manifest\n");
+		rv = 2;
+		goto res;
+	}
+	
+	rv = 0;
+	
+res:
+	if (hash) *hash = mhash;
+	if (hash_len) *hash_len = mhash_len;
+err:
+	return rv;
+}
+
+int get_boot_nonce_hash_from_manifest(struct idevicerestore_client_t* client, const uint8_t* manifest, const size_t manifest_len, uint8_t** boot_nonce_hash, size_t *nonce_hash_length)
+{
+	int rv = -16;
+	
+	if (!client || !manifest || !manifest_len) {
+		return -16;
+	}
+	
+	uint8_t* bhash = NULL;
+	size_t bhash_len = 0;
+	DERItem tmp = { .data = (DERByte *)manifest, .length = manifest_len };
+	TheImg4Manifest m;
+	if (DERImg4DecodeManifest(&tmp, &m)) {
+		error("ERROR: Failed to decode image4 manifest\n");
+		rv = -19;
+		goto err;
+	}
+	
+	if (Img4ManifestGetBootNonceHash(&m, (DERByte **)&bhash, (DERSize *)&bhash_len)) {
+		info("Failed to get boot-nonce hash from image4 manifest\n");
+		rv = 2;
+		goto res;
+	}
+	
+	rv = 0;
+	
+res:
+	if (boot_nonce_hash) *boot_nonce_hash = bhash;
+	if (nonce_hash_length) *nonce_hash_length = bhash_len;
+err:
+	return rv;
+}
+
+int validate_boot_nonce_hash(struct idevicerestore_client_t* client)
+{
+	int rv = -1;
+	if (!client) {
+		return rv;
+	}
+	if (!client->nonce) {
+		error("ERROR: no ApNonce\n");
+		return rv;
+	}
+	
+	plist_t tss_data = NULL;
+	char* im4m_data = NULL;
+	uint64_t im4m_data_len = 0;
+	uint8_t* boot_nonce_hash = NULL;
+	size_t nonce_hash_size = 0;
+	
+	tss_data = plist_copy(client->local_shsh);
+	if (!tss_data) {
+		error("ERROR: local TSS data not found\n");
+		rv = -2;
+		goto end;
+	}
+	
+	plist_t apimg4ticket = plist_dict_get_item(tss_data, "ApImg4Ticket");
+	if (!apimg4ticket) {
+		error("ERROR: no ApImg4Ticket dict\n");
+		rv = -3;
+		goto end;
+	}
+	
+	plist_get_data_val(apimg4ticket, &im4m_data, &im4m_data_len);
+	if (!im4m_data) {
+		error("ERROR: no img4 manifest\n");
+		rv = -4;
+		goto end;
+	}
+	
+	if (get_boot_nonce_hash_from_manifest(client, (const uint8_t*)im4m_data, (const size_t)im4m_data_len, &boot_nonce_hash, &nonce_hash_size)) {
+		error("ERROR: Unable to get boot-nonce hash from manifest\n");
+		rv = -5;
+		goto end;
+	}
+	
+	if (!boot_nonce_hash) {
+		error("ERROR: no boot-nonce hash\n");
+		rv = -6;
+		goto end;
+	}
+	
+	if (client->nonce_size != nonce_hash_size) {
+		error("ERROR: wrong boot-nonce hash size (%d != %d)\n", client->nonce_size, (int)nonce_hash_size);
+		rv = -7;
+		goto end;
+	}
+	
+	info("ApNonce: ");
+	int i;
+	for (i = 0; i < client->nonce_size; i++) {
+		info("%02x", client->nonce[i]);
+	}
+	info("\n");
+	info("BNCH: ");
+	for (i = 0; i < nonce_hash_size; i++) {
+		info("%02x", boot_nonce_hash[i]);
+	}
+	info("\n");
+	
+	if (memcmp(boot_nonce_hash, client->nonce, nonce_hash_size)) {
+		error("ERROR: Unexpected boot-nonce hash\n");
+		rv = -8;
+		goto end;
+	}
+	
+	rv = 0;
+	
+end:
+	if (tss_data) plist_free(tss_data);
+	if (im4m_data) free(im4m_data);
+	if (boot_nonce_hash) free(boot_nonce_hash);
+	return rv;
+}
+
+static int get_ECID_from_manifest(struct idevicerestore_client_t* client, const uint8_t* manifest, const size_t manifest_len, uint64_t* ecid)
+{
+	int rv = -16;
+	
+	if (!client || !manifest || !manifest_len) {
+		return -16;
+	}
+	
+	DERItem tmp = { .data = (DERByte *)manifest, .length = manifest_len };
+	TheImg4Manifest m;
+	if (DERImg4DecodeManifest(&tmp, &m)) {
+		error("ERROR: Failed to decode image4 manifest\n");
+		rv = -19;
+		goto err;
+	}
+	
+	if (Img4ManifestGetECID(&m, ecid)) {
+		info("Failed to get ECID from image4 manifest\n");
+		rv = 2;
+		goto err;
+	}
+	
+	rv = 0;
+	
+err:
+	return rv;
+}
+
+int validate_ECID(struct idevicerestore_client_t* client)
+{
+	int rv = -1;
+	if (!client) {
+		return rv;
+	}
+	if (!client->ecid) {
+		error("ERROR: no ECID\n");
+		return rv;
+	}
+	
+	plist_t tss_data = NULL;
+	char* im4m_data = NULL;
+	uint64_t im4m_data_len = 0;
+	uint64_t im4m_ecid = 0;
+	tss_data = plist_copy(client->local_shsh);
+	if (!tss_data) {
+		error("ERROR: local TSS data not found\n");
+		rv = -2;
+		goto end;
+	}
+	
+	plist_t apimg4ticket = plist_dict_get_item(tss_data, "ApImg4Ticket");
+	if (!apimg4ticket) {
+		error("ERROR: no ApImg4Ticket dict\n");
+		rv = -3;
+		goto end;
+	}
+	
+	plist_get_data_val(apimg4ticket, &im4m_data, &im4m_data_len);
+	if (!im4m_data) {
+		error("ERROR: no img4 manifest\n");
+		rv = -4;
+		goto end;
+	}
+	
+	if (get_ECID_from_manifest(client, (const uint8_t*)im4m_data, (const size_t)im4m_data_len, &im4m_ecid)) {
+		error("ERROR: Unable to get ECID from manifest\n");
+		rv = -5;
+		goto end;
+	}
+	
+	info("Device ECID: %016" PRIx64 "\n", client->ecid);
+	info("IM4M ECID: %016" PRIx64 "\n", im4m_ecid);
+	
+	if (client->ecid != im4m_ecid) {
+		error("ERROR: ECID mismatch detected\n");
+		rv = -8;
+		goto end;
+	}
+	
+	rv = 0;
+	
+end:
+	if (tss_data) plist_free(tss_data);
+	if (im4m_data) free(im4m_data);
+	return rv;
+}
+
+int validate_img4_digest(struct idevicerestore_client_t* client, plist_t build_identity,
+						 const char *compname, const uint8_t* payload, const size_t payload_len,
+						 const uint8_t* manifest, const size_t manifest_len,
+						 bool verify_manifest, bool verify_payload, uint32_t* result)
+{
+	int rv = -16;
+	if (!client || !build_identity || !compname) {
+		return -16;
+	}
+	
+	uint32_t _result = IMG4_DIGEST_ERROR;
+	
+	uint8_t* digest = NULL;
+	size_t digest_len = 0;
+	uint8_t* hash = NULL;
+	size_t hash_len = 0;
+	uint8_t* mhash = NULL;
+	size_t mhash_len = 0;
+	uint32_t type = 0;
+	
+	if (!build_identity_has_component(build_identity, compname)) {
+		rv = -17;
+		goto err;
+	}
+	
+	if (build_identity_get_component_digest(build_identity, compname, &digest, &digest_len)) {
+		error("ERROR: Unable to find digest data\n");
+		rv = -18;
+		goto err;
+	}
+	
+	if (verify_payload) {
+		if (!payload || !payload_len) {
+			error("ERROR: Unable to find image4 payload\n");
+			rv = -19;
+			goto err;
+		}
+	}
+	
+	if (verify_manifest) {
+		if (!manifest || !manifest_len) {
+			error("ERROR: Unable to find image4 manifest\n");
+			rv = -20;
+			goto err;
+		}
+	}
+	
+	if (get_img4_type_tag(compname, &type)) {
+		error("ERROR: Unable to get %s image4 type tag\n", compname);
+		rv = -21;
+		goto err;
+	}
+	
+	// Here we check whether the digest hash in the ipsw's BuildManifest and the img4 payload match.
+	if (verify_payload) {
+		uint32_t _type = 0;
+		if (get_img4_payload_tag(compname, payload, &_type)) {
+			error("ERROR: Unable to get image4 payload type tag\n");
+			rv = -22;
+			goto err;
+		}
+		if (_type != type) {
+			error("ERROR: image4 type tag does not match (%08x != %08x)\n", _type, type);
+			rv = -23;
+			goto err;
+		}
+		if (get_im4p_hash(client, compname, payload, payload_len, &hash, &hash_len)) {
+			error("ERROR: Unable to get image4 payload hash\n");
+			rv = -24;
+			goto err;
+		}
+		if (hash_len != digest_len) {
+			error("ERROR: Hash size does not match\n");
+			rv = -25;
+			goto err;
+		}
+		// check hash
+		if (memcmp(digest, hash, digest_len)) {
+			info("Hash does not match\n");
+			_result |= IMG4_DIGEST_VALID_PAYLOAD;
+		}
+		else {
+			_result |= (IMG4_DIGEST_VALID_PAYLOAD | IMG4_DIGEST_MATCHED_PAYLOAD);
+		}
+	}
+	
+	if (verify_manifest) {
+		DERItem tmp = { .data = (DERByte *)manifest, .length = manifest_len };
+		TheImg4Manifest m;
+		if (DERImg4DecodeManifest(&tmp, &m)) {
+			error("ERROR: Failed to decode image4 manifest\n");
+			rv = -26;
+			goto err;
+		}
+		
+		if (Img4ManifestGetDigest(&m, type, (DERByte **)&mhash, (DERSize *)&mhash_len)) {
+			info("Failed to get digest from image4 manifest\n");
+			rv = 2;
+			goto res;
+		}
+		
+		if (mhash_len != digest_len) {
+			error("ERROR: Hash size does not match\n");
+			rv = -27;
+			goto err;
+		}
+		if (memcmp(digest, mhash, digest_len)) {
+			info("Hash does not match\n");
+			_result |= IMG4_DIGEST_VALID_MANIFEST;
+		}
+		else {
+			_result |= (IMG4_DIGEST_VALID_MANIFEST | IMG4_DIGEST_MATCHED_MANIFEST);
+		}
+	}
+	
+	rv = 0;
+	
+res:
+	if (result) *result = _result;
+	
+err:
+	if (digest) free(digest);
+	if (hash) free(hash);
+	if (mhash) free(mhash);
+	return rv;
+}
+
+int get_image4_manifest_hash(const uint8_t* manifest, const size_t manifest_len, uint32_t type, uint8_t** hash, size_t* hash_len)
+{
+	int rv = -16;
+	uint8_t* mhash = NULL;
+	size_t mhash_len = 0;
+	
+	if (!manifest || !manifest_len || !type) {
+		return rv;
+	}
+	
+	DERItem tmp = { .data = (DERByte *)manifest, .length = manifest_len };
+	TheImg4Manifest m;
+	if (DERImg4DecodeManifest(&tmp, &m)) {
+		error("ERROR: Failed to decode image4 manifest\n");
+		rv = -26;
+		goto err;
+	}
+	
+	if (Img4ManifestGetDigest(&m, type, (DERByte **)&mhash, (DERSize *)&mhash_len)) {
+		info("Failed to get digest from image4 manifest\n");
+		rv = 2;
+		goto err;
+	}
+	
+	if (mhash_len > 0x30) {
+		error("ERROR: Too large hash size\n");
+		rv = -28;
+		goto err;
+	}
+	
+	if (hash && hash_len) {
+		uint8_t* _hash = malloc(mhash_len);
+		if (!_hash) {
+			error("ERROR: malloc failed\n");
+			rv = -28;
+			goto err;
+		}
+		memcpy(_hash, mhash, mhash_len);
+		*hash = _hash;
+		*hash_len = mhash_len;
+	}
+	
+	rv = 0;
+	
+err:
+	if (mhash) free(mhash);
+	return rv;
+}
+
+#endif

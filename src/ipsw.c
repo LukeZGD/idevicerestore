@@ -613,6 +613,15 @@ int ipsw_file_exists(ipsw_archive_t ipsw, const char* infile)
 	return 1;
 }
 
+static int my_stat(const char *restrict path, struct stat *restrict buf)
+{
+#ifdef WIN32
+	return stat(path, buf);
+#else
+	return lstat(path, buf);
+#endif
+}
+
 int ipsw_extract_to_memory(ipsw_archive_t ipsw, const char* infile, unsigned char** pbuffer, unsigned int* psize)
 {
 	size_t size = 0;
@@ -686,11 +695,7 @@ int ipsw_extract_to_memory(ipsw_archive_t ipsw, const char* infile, unsigned cha
 	} else {
 		char *filepath = build_path(ipsw->path, infile);
 		struct stat fst;
-#ifdef WIN32
-		if (stat(filepath, &fst) != 0) {
-#else
-		if (lstat(filepath, &fst) != 0) {
-#endif
+		if (my_stat(filepath, &fst) != 0) {
 			error("ERROR: %s: stat failed for %s: %s\n", __func__, filepath, strerror(errno));
 			free(filepath);
 			return -1;
@@ -819,11 +824,7 @@ int ipsw_extract_send(ipsw_archive_t ipsw, const char* infile, int blocksize, ip
 	} else {
 		char *filepath = build_path(ipsw->path, infile);
 		struct stat fst;
-#ifdef WIN32
-		if (stat(filepath, &fst) != 0) {
-#else
-		if (lstat(filepath, &fst) != 0) {
-#endif
+		if (my_stat(filepath, &fst) != 0) {
 			error("ERROR: %s: stat failed for %s: %s\n", __func__, filepath, strerror(errno));
 			free(filepath);
 			return -1;
@@ -962,11 +963,7 @@ static int ipsw_list_contents_recurse(ipsw_archive_t ipsw, const char *path, ips
 			subpath = strdup(dir->d_name);
 
 		struct stat st;
-#ifdef WIN32
-		ret = stat(fpath, &st);
-#else
-		ret = lstat(fpath, &st);
-#endif
+		ret = my_stat(fpath, &st);
 		if (ret != 0) {
 			error("ERROR: %s: stat failed for %s: %s\n", __func__, fpath, strerror(errno));
 			free(fpath);
@@ -1059,6 +1056,7 @@ int ipsw_list_contents(ipsw_archive_t ipsw, ipsw_list_cb cb, void *ctx)
 	return ret;
 }
 
+const char *gAPIURL = NULL;
 int ipsw_get_signed_firmwares(const char* product, plist_t* firmwares)
 {
 	char url[256];
@@ -1076,8 +1074,28 @@ int ipsw_get_signed_firmwares(const char* product, plist_t* firmwares)
 	}
 
 	*firmwares = NULL;
-	snprintf(url, sizeof(url), "https://api.ipsw.me/v4/device/%s", product);
 
+	// snprintf(url, sizeof(url), "https://api.ipsw.me/v4/device/%s", product);
+	int set_api_url = 0;
+	if (gAPIURL != NULL) {
+		size_t len = strlen(gAPIURL);
+		size_t prod_len = strlen(product);
+		size_t limit = sizeof(url);
+		if (len > 0 && prod_len > 0) {
+			if (len < limit && prod_len < limit) {
+				if (prod_len < (limit - len - 2)) {
+					const char* fmt = (gAPIURL[len - 1] == '/') ? "%s%s" : "%s/%s";
+					snprintf(url, sizeof(url), fmt, gAPIURL, product);
+					set_api_url = 1;
+				}
+			}
+		}
+	}
+	
+	if (!set_api_url) {
+		snprintf(url, sizeof(url), "https://api.ipsw.me/v4/device/%s", product);
+	}
+	
 	if (download_to_buffer(url, &jdata, &jsize) < 0) {
 		error("ERROR: Download from %s failed.\n", url);
 		return -1;

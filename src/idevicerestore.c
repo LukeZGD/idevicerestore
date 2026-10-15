@@ -58,6 +58,19 @@
 #include "limera1n.h"
 #endif
 
+#ifdef HAVE_TURDUS_MERULA
+#include <libfragmentzip/libfragmentzip.h>
+#include "pongo.h"
+
+#include "stuff/Pongo_bin.h"
+#include "stuff/cpf_bin.h"
+#include "stuff/kpf_bin.h"
+#include "stuff/sep_racer_bin.h"
+#include "stuff/overlay_bin.h"
+#include "stuff/union_bin.h"
+
+#endif
+
 #include "locking.h"
 
 #define VERSION_XML "version.xml"
@@ -68,10 +81,19 @@ static struct option longopts[] = {
 	{ "udid",           required_argument, NULL, 'u' },
 	{ "debug",          no_argument,       NULL, 'd' },
 	{ "help",           no_argument,       NULL, 'h' },
+	{ "server",         required_argument, NULL, 's' },
+	
+	{ "cache-path",     required_argument, NULL, 'C' },
+	{ "no-input",       no_argument,       NULL, 'y' },
+	{ "plain-progress", no_argument,       NULL, 'P' },
+	{ "version",        no_argument,       NULL, 'v' },
+	{ "ipsw-info",      no_argument,       NULL, 'I' },
+	{ "variant",        required_argument, NULL,  2  },
+	
+#ifndef HAVE_TURDUS_MERULA
 	{ "erase",          no_argument,       NULL, 'e' },
 	{ "custom",         no_argument,       NULL, 'c' },
 	{ "latest",         no_argument,       NULL, 'l' },
-	{ "server",         required_argument, NULL, 's' },
 	{ "exclude",        no_argument,       NULL, 'x' },
 	{ "shsh",           no_argument,       NULL, 't' },
 	{ "keep-pers",      no_argument,       NULL, 'k' },
@@ -79,18 +101,55 @@ static struct option longopts[] = {
 	{ "pwn",            no_argument,       NULL, 'p' },
 #endif
 	{ "no-action",      no_argument,       NULL, 'n' },
-	{ "cache-path",     required_argument, NULL, 'C' },
-	{ "no-input",       no_argument,       NULL, 'y' },
-	{ "plain-progress", no_argument,       NULL, 'P' },
 	{ "restore-mode",   no_argument,       NULL, 'R' },
 	{ "ticket",         required_argument, NULL, 'T' },
 	{ "no-restore",     no_argument,       NULL, 'z' },
-	{ "version",        no_argument,       NULL, 'v' },
-	{ "ipsw-info",      no_argument,       NULL, 'I' },
 	{ "ignore-errors",  no_argument,       NULL,  1  },
-	{ "variant",        required_argument, NULL,  2  },
+#endif
+	
+#ifdef HAVE_TURDUS_MERULA
+	{ "downgrade",       no_argument,       NULL, 'w' },
+	{ "boot-pongo",      no_argument,       NULL, 'j' },
+	{ "tethered",        no_argument,       NULL, 'o' },
+	
+	{ "bbfw",            required_argument, NULL, 'b' },
+	{ "sefw",            required_argument, NULL, 'f' },
+	{ "rsepfw",          required_argument, NULL, 'r' },
+	{ "signed-manifest", required_argument, NULL,  6  },
+	{ "signed-variant",  required_argument, NULL,  3  },
+	{ "load-shsh",       required_argument, NULL,  4  },
+	{ "load-shcblock",   required_argument, NULL,  5  },
+	{ "load-pteblock",   required_argument, NULL, 11  },
+	{ "enable-serial",   no_argument,       NULL, 12  },
+	{ "get-shcblock",    no_argument,       NULL, 13  },
+	{ "get-pteblock",    no_argument,       NULL, 14  },
+	{ "allow-unsupport", no_argument,       NULL, 15  },
+	{ "show-hash",       no_argument,       NULL, 16  },
+	{ "alternative-bbfw-manifest", required_argument, NULL, 17 },
+	{ "alternative-hardware-model", required_argument, NULL, 18  },
+	{ "alternative-bbfw", required_argument, NULL, 19  },
+	{ "api-url",         required_argument, NULL, 20  },
+#endif
 	{ NULL, 0, NULL, 0 }
 };
+
+#ifdef HAVE_TURDUS_MERULA
+static void print_module_hash(const char* name, const uint8_t* buf, const size_t length)
+{
+	unsigned char tsha384[SHA384_DIGEST_LENGTH];
+	memset(tsha384, 0, SHA384_DIGEST_LENGTH);
+	sha384_context sha384ctx;
+	sha384_init(&sha384ctx);
+	sha384_update(&sha384ctx, buf, length);
+	sha384_final(&sha384ctx, tsha384);
+	
+	info("%s hash: ", name);
+	for (int i = 0; i < SHA384_DIGEST_LENGTH; i++) {
+		info("%02x", tsha384[i]);
+	}
+	info("\n");
+}
+#endif
 
 static void usage(int argc, char* argv[], int err)
 {
@@ -99,6 +158,67 @@ static void usage(int argc, char* argv[], int err)
 #else
 #define PWN_FLAG_LINE ""
 #endif
+	
+#ifdef HAVE_TURDUS_MERULA
+#define TURDUS_MERULA_FLAG_LINE "\nDowngrade options:\n" \
+	"  -w, --downgrade           Restore device to an official firmware using saved TSS record (SHSH)\n" \
+	"                            (The SHSH must match the target firmware version)\n" \
+	"  -o, --tethered            Restore to any official firmware without a matching TSS record (SHSH)\n" \
+	"                            Uses the latest signed SHSH instead\n" \
+	"                            (Requires checkm8 exploit on every reboot)\n" \
+	"  -j, --boot-pongo          Boot pongoOS with the restore chain (no restore performed)\n" \
+	"  --load-shsh PATH          Load a custom SHSH from the given PATH\n" \
+	"  --load-shcblock PATH      Load SEP ciphertext block (shcblock) for A9/A9X devices\n" \
+	"  --load-pteblock PATH      Load SEP ciphertext block (pteblock) for A9/A9X devices\n" \
+	"  --enable-serial           Enable serial output during restore\n" \
+	"  -b, --bbfw PATH           Override BasebandFirmware image\n" \
+	"  -f, --sefw PATH           Override SE Firmware image\n" \
+	"  -r, --rsepfw PATH         Override RestoreSEP image4 payload\n" \
+	"  --signed-manifest PATH    Override BuildManifest for signed firmware components\n" \
+	"  --signed-variant VARIANT  Use given VARIANT to match the build identity to use with custom signed firmware components.\n" \
+	"  --get-shcblock            Acquire shcblock required for SEPROM exploit (fwload race) on A9/A9X devices\n" \
+	"  --get-pteblock            Acquire pteblock required for SEPROM exploit (boot_tz0 race) on A9/A9X devices\n" \
+	"  --allow-unsupport         Allow restore to an unsupported firmware version\n" \
+	"  --api-url URL             Override default API server URL\n" \
+	"  --show-hash               Show the SHA2-384 hashes of embedded modules\n\n" \
+	"\nThis is a fork of idevicerestore\n"
+#else
+#define TURDUS_MERULA_FLAG_LINE ""
+#endif
+	
+#ifndef HAVE_TURDUS_MERULA
+#define NON_TURDUS_MERULA_OPTION_FLAG_LINE "" \
+	"  -l, --latest          Use latest available firmware (with download on demand).\n" \
+	"                        Before performing any action it will interactively ask\n" \
+	"                        to select one of the currently signed firmware versions,\n" \
+	"                        unless -y has been given too.\n" \
+	"                        The PATH argument is ignored when using this option.\n" \
+	"                        DO NOT USE if you need to preserve the baseband/unlock!\n" \
+	"                        USE WITH CARE if you want to keep a jailbreakable\n" \
+	"                        firmware!\n" \
+	"  -e, --erase           Perform full restore instead of update, erasing all data\n" \
+	"                        DO NOT USE if you want to preserve user data on the device!\n" \
+	"  -n, --no-action       Do not perform any restore action. If combined with -l\n" \
+	"                        option the on-demand ipsw download is performed before\n" \
+	"                        exiting.\n"
+#define NON_TURDUS_MERULA_ADVANCED_OPTION_FLAG_LINE "" \
+	"  -c, --custom          Restore with a custom firmware (requires bootrom exploit)\n" \
+	"  -x, --exclude         Exclude nor/baseband upgrade (legacy devices)\n" \
+	"  -t, --shsh            Fetch TSS record and save to .shsh file, then exit\n" \
+	"  -z, --no-restore      Do not restore and end after booting to the ramdisk\n" \
+	"  -k, --keep-pers       Write personalized components to files for debugging\n" \
+	PWN_FLAG_LINE \
+	"  -R, --restore-mode    Allow restoring from Restore mode\n" \
+	"  -T, --ticket PATH     Use file at PATH to send as AP ticket\n" \
+	"  --ignore-errors       Try to continue the restore process after certain\n" \
+	"                        errors (like a failed baseband update)\n" \
+	"                        WARNING: This might render the device unable to boot\n" \
+	"                        or only partially functioning. Use with caution.\n"
+#else
+#define NON_TURDUS_MERULA_OPTION_FLAG_LINE ""
+#define NON_TURDUS_MERULA_ADVANCED_OPTION_FLAG_LINE ""
+#endif
+	
 	char* name = strrchr(argv[0], '/');
 	fprintf((err) ? stderr : stdout,
 	"Usage: %s [OPTIONS] PATH\n" \
@@ -113,51 +233,33 @@ static void usage(int argc, char* argv[], int err)
 	"                        e.g. 0xaabb123456 (hex) or 1234567890 (decimal)\n" \
 	"  -u, --udid UDID       Target specific device by its device UDID\n" \
 	"                        NOTE: only works with devices in normal mode.\n" \
-	"  -l, --latest          Use latest available firmware (with download on demand).\n" \
-	"                        Before performing any action it will interactively ask\n" \
-	"                        to select one of the currently signed firmware versions,\n" \
-	"                        unless -y has been given too.\n" \
-	"                        The PATH argument is ignored when using this option.\n" \
-	"                        DO NOT USE if you need to preserve the baseband/unlock!\n" \
-	"                        USE WITH CARE if you want to keep a jailbreakable\n" \
-	"                        firmware!\n" \
-	"  -e, --erase           Perform full restore instead of update, erasing all data\n" \
-	"                        DO NOT USE if you want to preserve user data on the device!\n" \
 	"  -y, --no-input        Non-interactive mode, do not ask for any input.\n" \
 	"                        WARNING: This will disable certain checks/prompts that\n" \
 	"                        are supposed to prevent DATA LOSS. Use with caution.\n" \
-	"  -n, --no-action       Do not perform any restore action. If combined with -l\n" \
-	"                        option the on-demand ipsw download is performed before\n" \
-	"                        exiting.\n" \
 	"  --ipsw-info           Print information about the IPSW at PATH and exit.\n" \
 	"  -h, --help            Prints this usage information\n" \
 	"  -C, --cache-path DIR  Use specified directory for caching extracted or other\n" \
 	"                        reused files.\n" \
 	"  -d, --debug           Enable communication debugging\n" \
 	"  -v, --version         Print version information\n" \
+	NON_TURDUS_MERULA_OPTION_FLAG_LINE \
 	"\n" \
 	"Advanced/experimental options:\n"
-	"  -c, --custom          Restore with a custom firmware (requires bootrom exploit)\n" \
 	"  -s, --server URL      Override default signing server request URL\n" \
-	"  -x, --exclude         Exclude nor/baseband upgrade (legacy devices)\n" \
-	"  -t, --shsh            Fetch TSS record and save to .shsh file, then exit\n" \
-	"  -z, --no-restore      Do not restore and end after booting to the ramdisk\n" \
-	"  -k, --keep-pers       Write personalized components to files for debugging\n" \
-	PWN_FLAG_LINE \
 	"  -P, --plain-progress  Print progress as plain step and progress\n" \
-	"  -R, --restore-mode    Allow restoring from Restore mode\n" \
-	"  -T, --ticket PATH     Use file at PATH to send as AP ticket\n" \
 	"  --variant VARIANT     Use given VARIANT to match the build identity to use,\n" \
-        "                        e.g. 'Customer Erase Install (IPSW)'\n" \
-	"  --ignore-errors       Try to continue the restore process after certain\n" \
-	"                        errors (like a failed baseband update)\n" \
-	"                        WARNING: This might render the device unable to boot\n" \
-	"                        or only partially functioning. Use with caution.\n" \
-	"\n" \
+	"                        e.g. 'Customer Erase Install (IPSW)'\n" \
+	NON_TURDUS_MERULA_ADVANCED_OPTION_FLAG_LINE \
+	// Downgrade command
+	TURDUS_MERULA_FLAG_LINE \
 	"Homepage:    <" PACKAGE_URL ">\n" \
 	"Bug Reports: <" PACKAGE_BUGREPORT ">\n",
 	(name ? name + 1 : argv[0]));
 }
+#endif
+
+#ifdef HAVE_TURDUS_MERULA
+static char* ap_shsh_path = NULL;
 #endif
 
 const uint8_t lpol_file[22] = {
@@ -168,6 +270,92 @@ const uint8_t lpol_file[22] = {
 const uint32_t lpol_file_length = 22;
 
 static int idevicerestore_keep_pers = 0;
+
+#ifdef HAVE_TURDUS_MERULA
+// pongoOS
+int hexparse(uint8_t *buf, char *s, size_t len)
+{
+	for(size_t i = 0; i < len; ++i)
+	{
+		char c = s[2*i],
+		d = s[2*i+1];
+		if(!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) ||
+		   !((d >= '0' && d <= '9') || (d >= 'a' && d <= 'f') || (d >= 'A' && d <= 'F')))
+		{
+			return -1;
+		}
+		buf[i] = ((uint8_t)(c >= '0' && c <= '9' ? c - '0' : (c >= 'a' && c <= 'f' ? c - 'a' : c - 'A') + 10) << 4) |
+		(uint8_t)(d >= '0' && d <= '9' ? d - '0' : (d >= 'a' && d <= 'f' ? d - 'a' : d - 'A') + 10);
+	}
+	return 0;
+}
+
+static bool is_bsep(sep_block_t* bsep)
+{
+	if (!bsep) {
+		return false;
+	}
+	if (bsep->magic != BSEP_MAGIC) {
+		return false;
+	}
+	return true;
+}
+
+static bool bsep_validate(sep_block_t* bsep)
+{
+	if (!bsep) {
+		return false;
+	}
+	if (is_bsep(bsep) == false) {
+		return false;
+	}
+	switch (bsep->block_version) {
+		case BSEP_VERSION_1:
+			return true;
+		default: // undefined
+			break;
+	}
+	return false;
+}
+
+static bool get_bsep_bversion(sep_block_t* bsep, uint32_t* rv)
+{
+	if (!bsep) {
+		return false;
+	}
+	if (is_bsep(bsep) == false) {
+		return false;
+	}
+	if (bsep_validate(bsep) == false) {
+		return false;
+	}
+	if (rv) {
+		*rv = bsep->block_version;
+	}
+	return true;
+}
+
+static bool get_bsep_type(sep_block_t* bsep, uint32_t* rv)
+{
+	if (!bsep) {
+		return false;
+	}
+	uint32_t bsep_bversion = 0;
+	if (get_bsep_bversion(bsep, &bsep_bversion) == false) {
+		return false;
+	}
+	if (bsep_bversion != BSEP_VERSION_1) {
+		return false; // unknown version
+	}
+	if (bsep->type != BSEP_TYPE_SHC && bsep->type != BSEP_TYPE_PTE) {
+		return false; // unknown type
+	}
+	if (rv) {
+		*rv = bsep->type;
+	}
+	return true;
+}
+#endif
 
 static int load_version_data(struct idevicerestore_client_t* client)
 {
@@ -305,6 +493,9 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 				case IRECV_K_PORT_DFU_MODE:
 					client->mode = MODE_PORTDFU;
 					break;
+				case IRECV_K_PONGO_MODE:
+					client->mode = MODE_PONGO;
+					break;
 				case IRECV_K_RECOVERY_MODE_1:
 				case IRECV_K_RECOVERY_MODE_2:
 				case IRECV_K_RECOVERY_MODE_3:
@@ -376,7 +567,11 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	// check which mode the device is currently in so we know where to start
 	mutex_lock(&client->device_event_mutex);
-	if (client->mode == MODE_UNKNOWN) {
+	if (client->mode == MODE_UNKNOWN
+#ifdef HAVE_TURDUS_MERULA
+		|| ((client->flags & FLAG_DOWNGRADE) && client->mode->index != _MODE_DFU && client->mode->index != _MODE_RECOVERY)
+#endif
+		) {
 		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
 		if (client->mode == MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
 			mutex_unlock(&client->device_event_mutex);
@@ -493,7 +688,251 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		error("ERROR: you need to put your device into DFU mode to pwn it.\n");
 		return -1;
 	}
-
+	
+#ifdef HAVE_TURDUS_MERULA
+	if (client->flags & FLAG_DOWNGRADE) {
+		// check pwnd DFU
+		if (client->mode != MODE_DFU) {
+			error("ERROR: you need to put your device into pwned DFU mode to use downgrade mode.\n");
+			return -1;
+		}
+		int not_pwnd = dfu_get_pwned_dfu(client);
+		if (not_pwnd) {
+			error("ERROR: you need to put your device into pwned DFU mode.\n");
+			return -1;
+		}
+		
+		if (
+			(client->flags & FLAG_CUSTOM) ||
+			(client->flags & FLAG_EXCLUDE) ||
+			(client->flags & FLAG_PWN) ||
+			(client->flags & FLAG_SHSHONLY) ||
+			(client->flags & FLAG_LATEST) ||
+			(client->flags & FLAG_ALLOW_RESTORE_MODE) ||
+			(client->flags & FLAG_NO_RESTORE)
+			) {
+			error("ERROR: client flags contains a value that is not available in downgrade mode.\n");
+			return -2;
+		}
+		
+		// get cpid
+		unsigned int cpid = 0;
+		unsigned int bdid = 0;
+		if (dfu_get_cpid(client, &cpid)) {
+			error("ERROR: Unable to fetch CPID\n");
+			return -2;
+		}
+		if (dfu_get_bdid(client, &bdid)) {
+			error("ERROR: Unable to fetch BDID\n");
+			return -2;
+		}
+		client->cpid = cpid;
+		client->bdid = bdid;
+		
+		// check device
+		if (client->cpid == 0x8010 || client->cpid == 0x8011) {
+			debug("Found supported device (CPID: %04x)\n", client->cpid);
+			if (client->sep_boot_tz0_race) {
+				error("ERROR: boot_tz0 race is not supported in this SoC\n");
+				return -2;
+			}
+			client->sep_fwload_race = 1;
+		}
+		else if (client->cpid == 0x8000 || client->cpid == 0x8001 || client->cpid == 0x8003) {
+			debug("Found supported device (CPID: %04x)\n", client->cpid);
+			if (client->sep_fwload_race && client->sep_boot_tz0_race) {
+				error("ERROR: Conflict detected\n");
+				return -2;
+			}
+			if (!(client->flags & FLAG_BOOT_PONGO)) {
+				if (!client->sep_fwload_race && !client->sep_boot_tz0_race) {
+					error("ERROR: No exploit method selected\n");
+					return -2;
+				}
+			}
+			if (client->flags & FLAG_BOOT_PONGO) {
+				if (client->sep_boot_tz0_race) {
+					error("ERROR: boot_tz0 race is not supported in pongoOS boot mode.\n");
+					return -2;
+				}
+				if (client->sep_fwload_race) {
+					if (!client->get_pte_block) {
+						error("ERROR: get_pte_block flag not found\n");
+						return -2;
+					}
+				}
+			}
+		}
+		else if (client->cpid == 0x7000 || client->cpid == 0x7001) {
+			error("ERROR: Unsupported device (CPID: %04x)\n", client->cpid);
+			return -2;
+			// DEBUG
+			/*
+			if (client->sep_fwload_race) {
+				error("ERROR: fwload race is not supported for this device for now.\n");
+				return -2;
+			}
+			debug("Found supported device (CPID: %04x)\n", client->cpid);
+			if (!(client->flags & FLAG_BOOT_PONGO)) {
+				if (!client->sep_boot_tz0_race) {
+					error("ERROR: No exploit method selected\n");
+					return -2;
+				}
+			}
+			if (client->flags & FLAG_BOOT_PONGO) {
+				if (client->sep_boot_tz0_race) {
+					error("ERROR: boot_tz0 race is not supported in pongoOS boot mode.\n");
+					return -2;
+				}
+			}
+			*/
+		}
+		else if (client->cpid == 0x8950 || client->cpid == 0x8955) {
+			client->is_32bit_soc = 1;
+			if (client->sep_boot_tz0_race || client->sep_fwload_race) {
+				error("ERROR: This device does not have the SEP.\n");
+				return -2;
+			}
+			if (client->flags & FLAG_BOOT_PONGO) {
+				error("ERROR: This device does not support pongoOS.\n");
+				return -2;
+			}
+		}
+		else {
+			error("ERROR: Unsupported device (CPID: %04x)\n", client->cpid);
+			return -2;
+		}
+		
+		if (client->get_shc_block || client->get_pte_block) {
+			if (client->cpid == 0x8010 || client->cpid == 0x8011) {
+				error("ERROR: This device does not requires SEP ciphertext block\n");
+				return -2;
+			}
+			if (client->get_shc_block && client->get_pte_block) {
+				error("ERROR: Conflict detected\n");
+				return -2;
+			}
+		}
+		
+		if (client->sep_shellcode_block && client->sep_shellcode_block_len) {
+			if (client->sep_shellcode_block_len == 0x80) {
+				info("INFO: This block is old version!\n");
+				uint8_t zero[0x10] = { 0 };
+				memset(zero, 0, 0x10);
+				if (memcmp(client->sep_shellcode_block + 0x30, zero, 0x10) || memcmp(client->sep_shellcode_block + 0x70, zero, 0x10)) {
+					error("ERROR: block type check failed!\n");
+					return -2;
+				}
+			}
+			else {
+				info("Checking block type\n");
+				bool _bsep_is_valid = 0;
+				sep_block_t* bsep = (sep_block_t*)client->sep_shellcode_block;
+				uint32_t myType = 0;
+				if (get_bsep_type(bsep, &myType) == false) {
+					error("ERROR: block type check failed!\n");
+					return -2;
+				}
+				if (myType == BSEP_TYPE_SHC) {
+					if (client->sep_fwload_race) {
+						_bsep_is_valid = 1;
+					}
+				}
+				if (myType == BSEP_TYPE_PTE) {
+					if (client->sep_boot_tz0_race) {
+						_bsep_is_valid = 1;
+					}
+				}
+				if (!_bsep_is_valid) {
+					error("ERROR: Invalid block type!\n");
+					return -2;
+				}
+			}
+		}
+		
+		// check shsh
+		// some modes require fetching from the server, so don't check them yet
+		if (!(client->flags & FLAG_TETHERED) && !(client->flags & FLAG_BOOT_PONGO)) {
+			if (!client->use_custom_ticket || !ap_shsh_path) {
+				error("ERROR: local shsh not selected\n");
+				return -2;
+			}
+			
+			debug("reading for local shsh\n");
+			char zfn[1024];
+			snprintf(zfn, sizeof(zfn), "%s", ap_shsh_path);
+			struct stat fst;
+			if (stat(zfn, &fst) == 0) {
+				gzFile zf = gzopen(zfn, "rb");
+				if (zf) {
+					size_t blen = 0;
+					size_t readsize = 16384;
+					size_t bufsize = readsize;
+					char* bin = (char*)malloc(bufsize);
+					if (bin == NULL) {
+						fprintf(stderr, "ERROR: Out of memory\n");
+						gzclose(zf);
+						return -1;
+					}
+					char* p = bin;
+					do {
+						int bytes_read = gzread(zf, p, readsize);
+						if (bytes_read < 0) {
+							fprintf(stderr, "Error reading gz compressed data\n");
+							if (bin) {
+								free(bin);
+							}
+							gzclose(zf);
+							return -1;
+						}
+						blen += bytes_read;
+						if (bytes_read < readsize) {
+							if (gzeof(zf)) {
+								bufsize += bytes_read;
+								break;
+							}
+						}
+						bufsize += readsize;
+						if (bufsize > 0x800000) {
+							fprintf(stderr, "ERROR: Too large file\n");
+							if (bin) {
+								free(bin);
+							}
+							gzclose(zf);
+							return -1;
+						}
+						char* realloc_bin = realloc(bin, bufsize);
+						if (realloc_bin == NULL) {
+							fprintf(stderr, "ERROR: realloc failed\n");
+							gzclose(zf);
+							if (bin) {
+								free(bin);
+							}
+							return -1;
+						}
+						bin = realloc_bin;
+						p = bin + blen;
+					} while (!gzeof(zf));
+					gzclose(zf);
+					if (blen > 0) {
+						if (memcmp(bin, "bplist00", 8) == 0) {
+							plist_from_bin(bin, blen, &client->local_shsh);
+						}
+						else {
+							plist_from_xml(bin, blen, &client->local_shsh);
+						}
+					}
+					free(bin);
+				}
+			}
+			else {
+				error("no local file %s\n", zfn);
+				return -1;
+			}
+		}
+	}
+#endif
+	
 	if (client->mode == MODE_NORMAL) {
 		plist_t pver = normal_get_lockdown_value(client, NULL, "ProductVersion");
 		if (pver) {
@@ -864,7 +1303,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	client->image4supported = is_image4_supported(client);
 	info("Device supports Image4: %s\n", (client->image4supported) ? "true" : "false");
-
+	
 	// choose whether this is an upgrade or a restore (default to upgrade)
 	client->tss = NULL;
 	plist_t build_identity = NULL;
@@ -1041,11 +1480,830 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	/* print information about current build identity */
 	build_identity_print_information(build_identity);
+	
+#ifdef HAVE_TURDUS_MERULA
+	bool has_bb = false;
+	bool has_se = false;
+	if (client->flags & FLAG_DOWNGRADE) {
+		// check cryptex1 ticket
+		if (!(client->flags & FLAG_TETHERED) && !(client->flags & FLAG_BOOT_PONGO)) {
+			if (build_identity_has_component(build_identity, "Cryptex1,AppOS") ||
+				build_identity_has_component(build_identity, "Cryptex1,SystemOS")) {
+				// need 'Cryptex1,Ticket'
+				int _found = 0;
+				debug("checking Cryptex1,Ticket\n");
+				if (plist_dict_get_item(client->local_shsh, "Cryptex1,Ticket")) {
+					_found = 1;
+				}
+				else {
+					plist_t cryptex1_tss = plist_dict_get_item(client->local_shsh, "cryptexTicket");
+					if (cryptex1_tss) {
+						if (plist_dict_get_item(cryptex1_tss, "Cryptex1,Ticket")) {
+							_found = 1;
+						}
+					}
+				}
+				if (_found != 1) {
+					error("no Cryptex1,Ticket\n");
+					return -1;
+				}
+				
+				debug("checking cryptexSeed\n");
+				plist_t cnonce_node = plist_dict_get_item(client->local_shsh, "cryptexSeed");
+				if (cnonce_node) {
+					char* cstr = NULL;
+					plist_get_string_val(cnonce_node, &cstr);
+					if (cstr) {
+						void* cstr_ptr = (void*)cstr;
+						if (strlen(cstr) != 34) {
+							error("wrong nonce seed size\n");
+							return -1;
+						}
+						if (!(cstr[0] == '0') || !(cstr[1] == 'x')) {
+							error("wrong nonce seed type\n");
+							return -1;
+						}
+						cstr += 2;
+						client->cryptex1_nonce_seed = strdup(cstr);
+						info("cryptexSeed = %s\n", client->cryptex1_nonce_seed);
+						_found = 2;
+						free(cstr_ptr);
+						cstr = NULL;
+						cstr_ptr = NULL;
+					}
+				}
+				if (_found != 2) {
+					error("no cryptexSeed\n");
+					return -1;
+				}
+			}
+		}
+		
+		/* check firmware components */
+		if (build_identity_has_component(build_identity, "BasebandFirmware")) {
+			has_bb = true;
+			
+			int is_MDM9645 = 0;
+			if (
+				(client->cpid == 0x8010 && ((client->bdid == 0x08) || (client->bdid == 0x0A))) ||
+				(client->cpid == 0x8011 && ((client->bdid == 0x0E) || (client->bdid == 0x06)))
+				)
+			{
+				is_MDM9645 = 1;
+			}
+			
+			/* If the latest baseband is not compatible with the firmware, please mark it here. */
+			int is_bb_incompatible = 0;
+			if (is_MDM9645 && client->build_major == 14) {
+				is_bb_incompatible = 1;
+			}
+			
+			if (is_bb_incompatible) {
+				if (client->flags & FLAG_INTERACTIVE) {
+					char input[64];
+					printf("############################ [ WARNING ] #############################\n"
+						   "# You are trying to restore to a version that does not have baseband #\n"
+						   "# compatibility. Restore might work, but it will not enable cellular #\n"
+						   "# and will mean you will have baseband issues.                       #\n"
+						   "# If you want to continue, please type YES and press ENTER.          #\n"
+						   "######################################################################\n");
+					while (1) {
+						printf("> ");
+						fflush(stdout);
+						fflush(stdin);
+						input[0] = '\0';
+						get_user_input(input, 63, 0);
+						if (client->flags & FLAG_QUIT) {
+							return -1;
+						}
+						if (*input != '\0' && !strcmp(input, "YES")) {
+							break;
+						} else {
+							printf("Invalid input. Please type YES or hit CTRL+C to abort.\n");
+							continue;
+						}
+					}
+				}
+			}
+		}
+		
+		if (build_identity_has_component(build_identity, "SE,UpdatePayload") ||
+			build_identity_has_component(build_identity, "SE,Firmware")) {
+			has_se = true;
+		}
+		
+		if (client->use_specific_fwver_component) {
+			if (client->build_major <= 13) {
+				if (client->cpid == 0x7000 || client->cpid == 0x7001 || client->cpid == 0x8000 || client->cpid == 0x8001 || client->cpid == 0x8003) {
+					error("ERROR: This option is not supported for this device\n");
+					return -1;
+				}
+			}
+			if (client->flags & FLAG_TETHERED) {
+				error("ERROR: This option is not supported for this device\n");
+				return -1;
+			}
+			if (!client->signed_manifest) {
+				error("ERROR: Could not find selected BuildManifest\n");
+				return -1;
+			}
+			if (has_bb) {
+				if (!client->bbfw) {
+					error("ERROR: Could not find selected BasebandFirmware\n");
+					return -1;
+				}
+			}
+			if (has_se) {
+				if (!client->sefw) {
+					error("ERROR: Could not find selected SE Firmware\n");
+					return -1;
+				}
+			}
+			if (client->sep_fwload_race || (client->flags & FLAG_TETHERED)) {
+				if (!client->rsepfw) {
+					error("ERROR: Could not find selected RestoreSEP\n");
+					return -1;
+				}
+			}
+		}
+		else {
+			if (client->signed_manifest) {
+				free(client->signed_manifest);
+				client->signed_manifest = NULL;
+			}
+			if (client->bbfw) {
+				free(client->bbfw);
+				client->bbfw = NULL;
+			}
+			if (client->sefw) {
+				free(client->sefw);
+				client->sefw = NULL;
+			}
+			if (client->rsepfw) {
+				free(client->rsepfw);
+				client->rsepfw = NULL;
+			}
+		}
+	
+		/* download latest firmware components */
+		fragmentzip_t *fragment = NULL;
+		if (!client->use_specific_fwver_component) {
+			char *fwurl = NULL;
+			unsigned char fwsha1[20];
+			unsigned char *p_fwsha1 = NULL;
+			plist_t signed_fws = NULL;
+			int res = ipsw_get_signed_firmwares(client->device->product_type, &signed_fws);
+			if (res < 0) {
+				error("ERROR: Could not fetch list of signed firmwares.\n");
+				return res;
+			}
+			uint32_t count = plist_array_get_size(signed_fws);
+			if (count == 0) {
+				plist_free(signed_fws);
+				error("ERROR: No firmwares are currently being signed for %s (REALLY?!)\n", client->device->product_type);
+				return -1;
+			}
+			plist_t selected_fw = NULL;
+			if (client->flags & FLAG_INTERACTIVE) {
+				uint32_t i = 0;
+				info("The following firmwares are currently being signed for %s:\n", client->device->product_type);
+				for (i = 0; i < count; i++) {
+					plist_t fw = plist_array_get_item(signed_fws, i);
+					plist_t p_version = plist_dict_get_item(fw, "version");
+					plist_t p_build = plist_dict_get_item(fw, "buildid");
+					char *s_version = NULL;
+					char *s_build = NULL;
+					plist_get_string_val(p_version, &s_version);
+					plist_get_string_val(p_build, &s_build);
+					info("  [%d] %s (build %s)\n", i+1, s_version, s_build);
+					free(s_version);
+					free(s_build);
+				}
+				while (1) {
+					char input[64];
+					printf("Select the firmware you want to use for the Baseband/SE/RestoreSEP: ");
+					fflush(stdout);
+					fflush(stdin);
+					get_user_input(input, 63, 0);
+					if (*input == '\0') {
+						plist_free(signed_fws);
+						return -1;
+					}
+					if (client->flags & FLAG_QUIT) {
+						return -1;
+					}
+					unsigned long selected = strtoul(input, NULL, 10);
+					if (selected == 0 || selected > count) {
+						printf("Invalid input value. Must be in range: 1..%u\n", count);
+						continue;
+					}
+					selected_fw = plist_array_get_item(signed_fws, (uint32_t)selected-1);
+					break;
+				}
+			} else {
+				info("NOTE: Running non-interactively, automatically selecting latest available version\n");
+				selected_fw = plist_array_get_item(signed_fws, 0);
+			}
+			if (!selected_fw) {
+				error("ERROR: failed to select latest firmware?!\n");
+				plist_free(signed_fws);
+				return -1;
+			} else {
+				plist_t p_version = plist_dict_get_item(selected_fw, "version");
+				plist_t p_build = plist_dict_get_item(selected_fw, "buildid");
+				char *s_version = NULL;
+				char *s_build = NULL;
+				plist_get_string_val(p_version, &s_version);
+				plist_get_string_val(p_build, &s_build);
+				info("Selected Baseband/SE/RestoreSEP version %s (build %s)\n", s_version, s_build);
+				free(s_version);
+				free(s_build);
+				plist_t p_url = plist_dict_get_item(selected_fw, "url");
+				plist_t p_sha1 = plist_dict_get_item(selected_fw, "sha1sum");
+				char *s_sha1 = NULL;
+				plist_get_string_val(p_url, &fwurl);
+				plist_get_string_val(p_sha1, &s_sha1);
+				if (strlen(s_sha1) == 40) {
+					int i;
+					int v;
+					for (i = 0; i < 40; i+=2) {
+						v = 0;
+						sscanf(s_sha1+i, "%02x", &v);
+						fwsha1[i/2] = (unsigned char)v;
+					}
+					p_fwsha1 = &fwsha1[0];
+				} else {
+					error("ERROR: unexpected size of sha1sum\n");
+				}
+			}
+			plist_free(signed_fws);
 
+			if (!fwurl || !p_fwsha1) {
+				error("ERROR: Missing firmware URL or SHA1\n");
+				return -1;
+			}
+
+			char* ipsw = NULL;
+			debug("firmware url: %s\n", fwurl);
+			fragment = fragmentzip_open(fwurl);
+			if (!fragment) {
+				error("ERROR: Could not open fragmentzip\n");
+				return -1;
+			}
+
+			char* manifest_bin = NULL;
+			size_t manifest_len = 0;
+			info("downloading %s\n", "BuildManifest.plist");
+			if (fragmentzip_download_to_memory(fragment, "BuildManifest.plist", &manifest_bin, &manifest_len, NULL)) {
+				error("ERROR: Could not find %s\n", "BuildManifest.plist");
+				fragmentzip_close(fragment);
+				return -1;
+			}
+			if (!manifest_bin) {
+				error("ERROR: Could not allocate %s buffer\n", "BuildManifest.plist");
+				fragmentzip_close(fragment);
+				return -1;
+			}
+			debug("manifest length: %zu\n", manifest_len);
+
+			if (memcmp(manifest_bin, "bplist00", 8) == 0) {
+				if (!client->signed_manifest) {
+					plist_from_bin((const char *)manifest_bin, manifest_len, &client->signed_manifest);
+				}
+			}
+			else {
+				if (!client->signed_manifest) {
+					plist_from_xml((const char *)manifest_bin, manifest_len, &client->signed_manifest);
+				}
+			}
+			free(manifest_bin);
+			if (!client->signed_manifest) {
+				error("ERROR: Could not allocate BuildManifest\n");
+				return -1;
+			}
+		}
+		
+		if (client->signed_manifest) {
+			if (client->signed_variant) {
+				client->signed_identity = build_manifest_get_build_identity_for_model_with_variant(client->signed_manifest, client->device->hardware_model, client->signed_variant, 1);
+			}
+			else if (client->flags & FLAG_ERASE) {
+				client->signed_identity = build_manifest_get_build_identity_for_model_with_variant(client->signed_manifest, client->device->hardware_model, RESTORE_VARIANT_ERASE_INSTALL, 0);
+			}
+			else {
+				client->signed_identity = build_manifest_get_build_identity_for_model_with_variant(client->signed_manifest, client->device->hardware_model, RESTORE_VARIANT_UPGRADE_INSTALL, 0);
+			}
+			if (client->signed_identity == NULL) {
+				error("ERROR: Unable to find a matching signed build identity\n");
+				if (fragment) {
+					fragmentzip_close(fragment);
+				}
+				return -1;
+			}
+		}
+		
+		if (client->alternative_bbfw_manifest) {
+			if (!client->alternative_hardware_model) {
+				error("ERROR: Alternative hardware model is not found\n");
+				if (fragment) {
+					fragmentzip_close(fragment);
+				}
+				return -1;
+			}
+			client->alternative_bbfw_identity = build_manifest_get_build_identity_for_model_with_variant(client->alternative_bbfw_manifest, client->alternative_hardware_model, RESTORE_VARIANT_ERASE_INSTALL, 0);
+			if (client->alternative_bbfw_identity == NULL) {
+				error("ERROR: Unable to find a matching alternative build identity\n");
+				if (fragment) {
+					fragmentzip_close(fragment);
+				}
+				return -1;
+			}
+		}
+		
+		/* print information about current baseband/se build identity */
+		
+		// BBFW
+		if (!client->use_specific_fwver_component) {
+			if (has_bb) {
+				if (client->signed_identity) {
+					if (!fragment) {
+						error("ERROR: Could not open fragmentzip information\n");
+						return -1;
+					}
+					
+					info("BasebandFirmware manifest information\n");
+					build_identity_print_information(client->signed_identity);
+					
+					char* value = NULL;
+					plist_t manifest_node = NULL;
+					plist_t bb_node = NULL;
+					plist_t info_node = NULL;
+					plist_t node = NULL;
+					
+					manifest_node = plist_dict_get_item(client->signed_identity, "Manifest");
+					if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Manifest node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					bb_node = plist_dict_get_item(manifest_node, "BasebandFirmware");
+					if (!bb_node || plist_get_node_type(bb_node) != PLIST_DICT) {
+						error("ERROR: Unable to find BasebandFirmware node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					info_node = plist_dict_get_item(bb_node, "Info");
+					if (!info_node || plist_get_node_type(info_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Info node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					node = plist_dict_get_item(info_node, "Path");
+					if (!node || plist_get_node_type(node) != PLIST_STRING) {
+						error("ERROR: Unable to find Path node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					plist_get_string_val(node, &value);
+					
+					info("downloading %s\n", value);
+					if (client->flags & FLAG_BOOT_PONGO) {
+						debug("skip downloading %s\n", value);
+					}
+					else {
+						if (fragmentzip_download_to_memory(fragment, value, (char **)&client->bbfw, &client->bbfw_len, NULL)) {
+							error("ERROR: Could not find %s\n", value);
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+						if (!client->bbfw) {
+							error("ERROR: Could not allocate %s buffer\n", value);
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+						debug("BasebandFirmware length: %zu\n", client->bbfw_len);
+					}
+				}
+			}
+			
+			// SEFW
+			if (has_se) {
+				if (client->signed_identity) {
+					if (!fragment) {
+						error("ERROR: Could not open fragmentzip information\n");
+						return -1;
+					}
+					
+					info("SE Firmware manifest information\n");
+					build_identity_print_information(client->signed_identity);
+					
+					char* value = NULL;
+					plist_t manifest_node = NULL;
+					plist_t se_node = NULL;
+					plist_t info_node = NULL;
+					plist_t node = NULL;
+					
+					manifest_node = plist_dict_get_item(client->signed_identity, "Manifest");
+					if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Manifest node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					se_node = plist_dict_get_item(manifest_node, "SE,UpdatePayload"); // Stockholm
+					if (!se_node || plist_get_node_type(se_node) != PLIST_DICT) {
+						se_node = plist_dict_get_item(manifest_node, "SE,Firmware"); // Icefall
+						if (!se_node || plist_get_node_type(se_node) != PLIST_DICT) {
+							error("ERROR: Unable to find SE Firmware node\n");
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+					}
+					
+					info_node = plist_dict_get_item(se_node, "Info");
+					if (!info_node || plist_get_node_type(info_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Info node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					node = plist_dict_get_item(info_node, "Path");
+					if (!node || plist_get_node_type(node) != PLIST_STRING) {
+						error("ERROR: Unable to find Path node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					plist_get_string_val(node, &value);
+					
+					info("downloading %s\n", value);
+					if (client->flags & FLAG_BOOT_PONGO) {
+						debug("skip downloading %s\n", value);
+					}
+					else {
+						if (fragmentzip_download_to_memory(fragment, value, (char **)&client->sefw, &client->sefw_len, NULL)) {
+							error("ERROR: Could not find %s\n", value);
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+						if (!client->sefw) {
+							error("ERROR: Could not allocate %s buffer\n", value);
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+						debug("SE Firmware length: %zu\n", client->sefw_len);
+					}
+				}
+			}
+			
+			// SEPFW
+			if ((client->sep_fwload_race || (client->flags & FLAG_TETHERED)) && client->is_32bit_soc != 1) {
+				if (client->signed_identity) {
+					if (!fragment) {
+						error("ERROR: Could not open fragmentzip information\n");
+						return -1;
+					}
+					
+					info("RestoreSEP manifest information\n");
+					build_identity_print_information(client->signed_identity);
+					
+					char* value = NULL;
+					plist_t manifest_node = NULL;
+					plist_t sep_node = NULL;
+					plist_t info_node = NULL;
+					plist_t node = NULL;
+					
+					manifest_node = plist_dict_get_item(client->signed_identity, "Manifest");
+					if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Manifest node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					sep_node = plist_dict_get_item(manifest_node, "RestoreSEP");
+					if (!sep_node || plist_get_node_type(sep_node) != PLIST_DICT) {
+						error("ERROR: Unable to find RestoreSEP node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					info_node = plist_dict_get_item(sep_node, "Info");
+					if (!info_node || plist_get_node_type(info_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Info node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					node = plist_dict_get_item(info_node, "Path");
+					if (!node || plist_get_node_type(node) != PLIST_STRING) {
+						error("ERROR: Unable to find Path node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					plist_get_string_val(node, &value);
+					
+					info("downloading %s\n", value);
+					if ((client->flags & FLAG_BOOT_PONGO) && (!client->sep_fwload_race)) {
+						debug("skip downloading %s\n", value);
+					}
+					else {
+						if (fragmentzip_download_to_memory(fragment, value, (char **)&client->rsepfw, &client->rsepfw_len, NULL)) {
+							error("ERROR: Could not find %s\n", value);
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+						if (!client->rsepfw) {
+							error("ERROR: Could not allocate %s buffer\n", value);
+							if (fragment) {
+								fragmentzip_close(fragment);
+							}
+							return -1;
+						}
+						debug("RestoreSEP length: %zu\n", client->rsepfw_len);
+					}
+				}
+			}
+		}
+		
+		// iBSS
+		client->alternative_ibss = NULL;
+		client->alternative_ibss_len = 0;
+		if (client->signed_manifest) {
+			if (client->build_major <= 13) {
+				if (client->cpid == 0x7000 || client->cpid == 0x7001 || client->cpid == 0x8000 || client->cpid == 0x8001 || client->cpid == 0x8003) {
+					// use alternative ibss
+					if (!fragment) {
+						error("ERROR: Could not open fragmentzip information\n");
+						return -1;
+					}
+					
+					info("iBSS manifest information\n");
+					build_identity_print_information(client->signed_identity);
+					
+					char* value = NULL;
+					plist_t manifest_node = NULL;
+					plist_t ibss_node = NULL;
+					plist_t info_node = NULL;
+					plist_t node = NULL;
+					
+					manifest_node = plist_dict_get_item(client->signed_identity, "Manifest");
+					if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Manifest node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					ibss_node = plist_dict_get_item(manifest_node, "iBSS");
+					if (!ibss_node || plist_get_node_type(ibss_node) != PLIST_DICT) {
+						error("ERROR: Unable to find iBSS node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					info_node = plist_dict_get_item(ibss_node, "Info");
+					if (!info_node || plist_get_node_type(info_node) != PLIST_DICT) {
+						error("ERROR: Unable to find Info node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					
+					node = plist_dict_get_item(info_node, "Path");
+					if (!node || plist_get_node_type(node) != PLIST_STRING) {
+						error("ERROR: Unable to find Path node\n");
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					plist_get_string_val(node, &value);
+					
+					info("downloading %s\n", value);
+					if (fragmentzip_download_to_memory(fragment, value, (char **)&client->alternative_ibss, &client->alternative_ibss_len, NULL)) {
+						error("ERROR: Could not find %s\n", value);
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					if (!client->alternative_ibss) {
+						error("ERROR: Could not allocate %s buffer\n", value);
+						if (fragment) {
+							fragmentzip_close(fragment);
+						}
+						return -1;
+					}
+					debug("iBSS length: %zu\n", client->alternative_ibss_len);
+				}
+			}
+		}
+		
+		// tethered
+		if (client->flags & FLAG_TETHERED) {
+			if (client->signed_manifest) {
+				if (!fragment) {
+					error("ERROR: Could not open fragmentzip information\n");
+					return -1;
+				}
+				info("tethered manifest information\n");
+				build_identity_print_information(client->signed_identity);
+				
+				char* value = NULL;
+				plist_t manifest_node = NULL;
+				
+				manifest_node = plist_dict_get_item(client->signed_identity, "Manifest");
+				if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
+					error("ERROR: Unable to find Manifest node\n");
+					if (fragment) {
+						fragmentzip_close(fragment);
+					}
+					return -1;
+				}
+				
+#define DL_FW_COMP(name) { \
+plist_t _item_node = plist_dict_get_item(manifest_node, #name); \
+if (!_item_node || plist_get_node_type(_item_node) != PLIST_DICT) { \
+error("ERROR: Unable to find %s node\n", #name); \
+if (fragment) fragmentzip_close(fragment); \
+return -1; \
+} \
+plist_t _info_node = plist_dict_get_item(_item_node, "Info"); \
+if (!_info_node || plist_get_node_type(_info_node) != PLIST_DICT) { \
+error("ERROR: Unable to find Info node\n"); \
+if (fragment) fragmentzip_close(fragment); \
+return -1; \
+} \
+plist_t _node = plist_dict_get_item(_info_node, "Path"); \
+if (!_node || plist_get_node_type(_node) != PLIST_STRING) { \
+error("ERROR: Unable to find Path node\n"); \
+if (fragment) fragmentzip_close(fragment); \
+return -1; \
+} \
+plist_get_string_val(_node, &value); \
+info("downloading %s\n", value); \
+if (fragmentzip_download_to_memory(fragment, value, (char **)&client->t_##name, &client->t_##name##_len, NULL)) { \
+error("ERROR: Could not find %s\n", value); \
+if (fragment) fragmentzip_close(fragment); \
+return -1; \
+} \
+if (!client->t_##name) { \
+error("ERROR: Could not allocate %s buffer\n", value); \
+if (fragment) fragmentzip_close(fragment); \
+return -1; \
+} \
+debug("%s length: %zu\n", #name, client->t_##name##_len); \
+}
+				
+				/*
+				 client->device->product_type
+				 */
+				
+				DL_FW_COMP(LLB);
+				DL_FW_COMP(iBoot);
+				DL_FW_COMP(AppleLogo);
+				DL_FW_COMP(RecoveryMode);
+				if (client->device->product_type && strncmp(client->device->product_type, "AppleTV", 7) == 0) {
+					// YOLO
+				}
+				else {
+					DL_FW_COMP(BatteryCharging0);
+					DL_FW_COMP(BatteryCharging1);
+					DL_FW_COMP(BatteryFull);
+					DL_FW_COMP(BatteryLow0);
+					DL_FW_COMP(BatteryLow1);
+					DL_FW_COMP(BatteryPlugin);
+				}
+			}
+		}
+		
+		if (fragment) {
+			fragmentzip_close(fragment);
+		}
+	}
+	
+	if (client->flags & FLAG_TETHERED) {
+		int is_supported_version = 0;
+		if (
+			client->build_major == 10 || // iOS 6
+			client->build_major == 13 || // iOS 9
+			client->build_major == 14 || // iOS 10
+			client->build_major == 15 || // iOS 11
+			client->build_major == 17 || // iOS/iPadOS 13
+			client->build_major == 18 || // iOS/iPadOS 14
+			client->build_major == 19 || // iOS/iPadOS 15
+			client->build_major == 20 || // iPadOS 16
+			client->build_major == 21    // iPadOS 17
+			)
+		{
+				is_supported_version = 1;
+		}
+		
+		// iOS 7
+		if (client->build_major == 11) {
+			if (client->cpid != 0x8960 && client->cpid != 0x7000 && client->cpid != 0x7001) {
+				is_supported_version = 1;
+			}
+		}
+		
+		// iOS 8
+		if (client->build_major == 12) {
+			if (client->cpid != 0x7000 && client->cpid != 0x7001) {
+				is_supported_version = 1;
+			}
+		}
+		
+		// iOS 12
+		if (client->build_major == 16) {
+			if (strncmp(client->version, "12.0", 4) == 0 ||
+				strncmp(client->version, "12.1", 4) == 0 ||
+				strncmp(client->version, "12.2", 4) == 0 ||
+				strncmp(client->version, "12.3", 4) == 0 ||
+				strncmp(client->version, "12.4", 4) == 0)
+			{
+				is_supported_version = 1;
+			}
+		}
+		
+		// iPadOS 18
+		if (client->build_major == 22) {
+			if (strncmp(client->version, "18.0", 4) == 0 ||
+				strncmp(client->version, "18.1", 4) == 0 ||
+				strncmp(client->version, "18.2", 4) == 0 ||
+				strncmp(client->version, "18.3", 4) == 0 ||
+				strncmp(client->version, "18.4", 4) == 0 ||
+				strncmp(client->version, "18.5", 4) == 0 ||
+				strncmp(client->version, "18.6", 4) == 0 ||
+				strncmp(client->version, "18.7", 4) == 0)
+			{
+				is_supported_version = 1;
+			}
+		}
+        
+        // tvOS 26
+        if (client->build_major == 23) {
+            if (strncmp(client->version, "26.0", 4) == 0 ||
+                strncmp(client->version, "26.1", 4) == 0 ||
+                strncmp(client->version, "26.2", 4) == 0)
+            {
+                is_supported_version = 1;
+            }
+        }
+		
+		if (!is_supported_version) {
+			if (!(client->flags & FLAG_ALLOW_UNSUPPORTED)) {
+				error("unsupported this ios version yet\n");
+				return -1;
+			}
+			info("warn: unsupported ios version\n");
+		}
+	}
+#endif
+	
 	if (client->macos_variant) {
 		info("Performing macOS restore\n");
 	}
-
+	
 	if (client->mode == MODE_NORMAL && !(client->flags & FLAG_ERASE) && !(client->flags & FLAG_SHSHONLY)) {
 		if (client->device_version && (compare_versions(client->device_version, client->version) > 0)) {
 			if (client->flags & FLAG_INTERACTIVE) {
@@ -1109,7 +2367,43 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			}
 		}
 	}
-
+	
+#ifdef HAVE_TURDUS_MERULA
+	if (client->flags & FLAG_DOWNGRADE && client->get_pte_block && !client->sep_fwload_race) {
+		if (client->cpid == 0x7000 || client->cpid == 0x7001) {
+			// DEBUG: PASS
+		}
+		else {
+			error("ERROR: This option is currently not supported in this version.\n");
+			return -1;
+		}
+		// TODO: deprecated
+		if (client->flags & FLAG_INTERACTIVE) {
+			char input[64];
+			printf("################################ [ WARNING ] #################################\n"
+				   "# This mode writes to memory beyond TZ bounds, but there are no guarantees   #\n"
+				   "# that these writes are safe.                                                #\n"
+				   "# If you want to continue, please type YES and press ENTER.                  #\n"
+				   "##############################################################################\n");
+			while (1) {
+				printf("> ");
+				fflush(stdout);
+				fflush(stdin);
+				input[0] = '\0';
+				get_user_input(input, 63, 0);
+				if (client->flags & FLAG_QUIT) {
+					return -1;
+				}
+				if (*input != '\0' && !strcmp(input, "YES")) {
+					break;
+				} else {
+					printf("Invalid input. Please type YES or hit CTRL+C to abort.\n");
+					continue;
+				}
+			}
+		}
+	}
+#endif
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.0);
 
 	/* check if all components we need are actually there */
@@ -1188,6 +2482,18 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.2);
 
+#ifdef HAVE_TURDUS_MERULA
+	if ((client->flags & FLAG_DOWNGRADE) && client->is_32bit_soc != 1) {
+		if (!(client->flags & FLAG_BOOT_PONGO)) {
+			// checks the hashes of several important firmware components
+			info("Checking hashes...\n");
+			if (check_firmware_components(client, build_identity)) {
+				return -1;
+			}
+		}
+	}
+#endif
+	
 	/* retrieve shsh blobs if required */
 	if (tss_enabled) {
 		int stashbag_commit_required = 0;
@@ -1436,9 +2742,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 				}
 			}
 		}
-
 		mutex_lock(&client->device_event_mutex);
-
 		/* now we load the iBEC */
 		if (recovery_send_ibec(client, build_identity) < 0) {
 			mutex_unlock(&client->device_event_mutex);
@@ -1517,6 +2821,148 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	// now finally do the magic to put the device into restore mode
 	if (client->mode == MODE_RECOVERY) {
+#ifdef HAVE_TURDUS_MERULA
+		if ((client->flags & FLAG_DOWNGRADE) && client->is_32bit_soc != 1) {
+			if (!(client->flags & FLAG_BOOT_PONGO) || (client->sep_fwload_race && client->get_pte_block)) {
+				// extract sep im4p
+				if (client->sep_fwload_race || (client->flags & FLAG_TETHERED)) {
+					char* sep_path = NULL;
+					if (build_identity_has_component(build_identity, "SEP") &&
+						build_identity_get_component_path(build_identity, "SEP", &sep_path) == 0) {
+						if (extract_component(client->ipsw, sep_path, (unsigned char **)&client->sepi_im4p, (unsigned int *)&client->sepi_im4p_len) < 0) {
+							error("ERROR: Unable to extract component: %s\n", "SEP");
+							if (sep_path) {
+								free(sep_path);
+							}
+							return -1;
+						}
+						if (!client->sepi_im4p) {
+							if (sep_path) {
+								free(sep_path);
+							}
+							error("ERROR: Unable to extract component: %s\n", "SEP");
+							return -1;
+						}
+						// save SEP.im4p for tethered
+						if (client->sep_fwload_race && (client->flags & FLAG_TETHERED)) {
+							char zfn[1024];
+							if (client->cache_dir) {
+								strcpy(zfn, client->cache_dir);
+								strcat(zfn, "/image4");
+							} else {
+								strcpy(zfn, "image4");
+							}
+							mkdir_with_parents(zfn, 0755);
+							snprintf(&zfn[0] + strlen(zfn), sizeof(zfn) - strlen(zfn), "/%" PRIu64 "-%s-%s-SEP.im4p", client->ecid, client->device->product_type, client->version);
+							FILE *zf = fopen(zfn, "wb");
+							if (!zf) {
+								error("error opening %s\n", zfn);
+								free(client->sepi_im4p);
+								if (sep_path) {
+									free(sep_path);
+								}
+								return -1;
+							}
+							fwrite(client->sepi_im4p, client->sepi_im4p_len, 1, zf);
+							fflush(zf);
+							fclose(zf);
+							info("SEP im4p saved to '%s'\n", zfn);
+						}
+						if (sep_path) {
+							free(sep_path);
+						}
+					}
+					else {
+						error("ERROR: Unable to extract component: %s\n", "SEP");
+						if (sep_path) {
+							free(sep_path);
+						}
+						return -1;
+					}
+				}
+				
+				// boot_tz0 race is possible even without a valid SEP image
+				if (client->sep_fwload_race || (client->flags & FLAG_TETHERED)) {
+					if (!client->rsepfw || !client->signed_identity) {
+						error("ERROR: Could not find information about RestoreSEP\n");
+						return -1;
+					}
+					plist_t latest_tss = NULL;
+					if (client->flags & FLAG_TETHERED) {
+						if (!client->local_shsh) {
+							error("ERROR: Unable to get cached SHSH\n");
+							return -1;
+						}
+						latest_tss = plist_copy(client->local_shsh);
+					}
+					else {
+						if (force_get_tss_response(client, client->signed_identity, &latest_tss) < 0) {
+							error("ERROR: Unable to get latest SHSH\n");
+							return -1;
+						}
+					}
+					if (personalize_component(client, "RestoreSEP", client->rsepfw, client->rsepfw_len, latest_tss, (unsigned char **)&client->rsep_img4, (unsigned int *)&client->rsep_img4_len) < 0) {
+						error("ERROR: Unable to get personalized component: %s\n", "RestoreSEP");
+						if (latest_tss) {
+							free(latest_tss);
+						}
+						return -1;
+					}
+					if (client->flags & FLAG_TETHERED) {
+						uint8_t* cached_sep = NULL;
+						size_t cached_sep_len = 0;
+						if (personalize_component(client, "SEPTethered", client->rsepfw, client->rsepfw_len, latest_tss, (unsigned char **)&cached_sep, (unsigned int *)&cached_sep_len) < 0) {
+							error("ERROR: Unable to get personalized component: %s\n", "SEP");
+							if (latest_tss) {
+								free(latest_tss);
+							}
+							return -1;
+						}
+						
+						if (cached_sep) {
+							char zfn[1024];
+							if (client->cache_dir) {
+								strcpy(zfn, client->cache_dir);
+								strcat(zfn, "/image4");
+							} else {
+								strcpy(zfn, "image4");
+							}
+							mkdir_with_parents(zfn, 0755);
+							snprintf(&zfn[0] + strlen(zfn), sizeof(zfn) - strlen(zfn), "/%" PRIu64 "-%s-signed-SEP.img4", client->ecid, client->device->product_type);
+							FILE *zf = fopen(zfn, "wb");
+							if (!zf) {
+								error("error opening %s\n", zfn);
+								free(cached_sep);
+								if (latest_tss) {
+									free(latest_tss);
+								}
+								return -1;
+							}
+							fwrite(cached_sep, cached_sep_len, 1, zf);
+							fflush(zf);
+							fclose(zf);
+							info("SEP img4 saved to '%s'\n", zfn);
+							
+							free(cached_sep);
+							cached_sep = NULL;
+							cached_sep_len = 0;
+						}
+						else {
+							error("ERROR: Unable to get cached component: %s\n", "SEP");
+							if (latest_tss) {
+								free(latest_tss);
+							}
+							return -1;
+						}
+					}
+					if (latest_tss) {
+						free(latest_tss);
+					}
+				}
+			}
+		}
+#endif
+		
 		if (recovery_enter_restore(client, build_identity) < 0) {
 			error("ERROR: Unable to place device into restore mode\n");
 			if (client->tss)
@@ -1530,7 +2976,159 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	if (client->mode != MODE_RESTORE) {
 		mutex_lock(&client->device_event_mutex);
 		info("Waiting for device to enter restore mode...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 180000);
+		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 100000000);
+		
+#ifdef HAVE_TURDUS_MERULA
+		if ((client->flags & FLAG_DOWNGRADE) && client->is_32bit_soc != 1) {
+			// allocate image4 manifest
+				if (!client->local_shsh) {
+					error("no local shsh buffer\n");
+					return -1;
+				}
+				plist_t apimg4ticket_tss = plist_dict_get_item(client->local_shsh, "ApImg4Ticket");
+				if (apimg4ticket_tss) {
+					plist_get_data_val(apimg4ticket_tss, (char**)&client->img4_manifest, &client->img4_manifest_len);
+				}
+				if (!client->img4_manifest) {
+					error("no img4 manifest\n");
+					return -1;
+				}
+				
+				if (client->cpid == 0x8010 || client->cpid == 0x8011) {
+					unsigned char tsha384[SHA384_DIGEST_LENGTH];
+					memset(tsha384, 0, SHA384_DIGEST_LENGTH);
+					sha384_context sha384ctx;
+					sha384_init(&sha384ctx);
+					sha384_update(&sha384ctx, client->img4_manifest, client->img4_manifest_len);
+					sha384_final(&sha384ctx, tsha384);
+					client->img4_manifest_hash_len = SHA384_DIGEST_LENGTH;
+					client->img4_manifest_hash = malloc(client->img4_manifest_hash_len);
+					if (!client->img4_manifest_hash) {
+						error("malloc failed\n");
+						return -1;
+					}
+					memset(client->img4_manifest_hash, 0, client->img4_manifest_hash_len);
+					memcpy(client->img4_manifest_hash, tsha384, SHA384_DIGEST_LENGTH);
+				}
+				else if (client->cpid == 0x7000 || client->cpid == 0x7001 || client->cpid == 0x8000 || client->cpid == 0x8001 || client->cpid == 0x8003) {
+					unsigned char tsha1[SHA1_DIGEST_LENGTH];
+					memset(tsha1, 0, SHA1_DIGEST_LENGTH);
+					sha1_context sha1ctx;
+					sha1_init(&sha1ctx);
+					sha1_update(&sha1ctx, client->img4_manifest, client->img4_manifest_len);
+					sha1_final(&sha1ctx, tsha1);
+					client->img4_manifest_hash_len = SHA1_DIGEST_LENGTH;
+					client->img4_manifest_hash = malloc(client->img4_manifest_hash_len);
+					if (!client->img4_manifest_hash) {
+						error("malloc failed\n");
+						return -1;
+					}
+					memset(client->img4_manifest_hash, 0, client->img4_manifest_hash_len);
+					memcpy(client->img4_manifest_hash, tsha1, SHA1_DIGEST_LENGTH);
+				}
+				else {
+					error("found unknown device\n");
+					return -1;
+				}
+				if (!client->img4_manifest_hash) {
+					error("no img4 manifest hash\n");
+					return -1;
+				}
+				
+				uint8_t* _manifest_hash = (uint8_t*)client->img4_manifest_hash;
+				debug("img4 manifest hash: ");
+				for (int i = 0; i < client->img4_manifest_hash_len; i++) {
+					debug("%02x", _manifest_hash[i]);
+				}
+				debug("\n");
+			
+			if (client->mode == MODE_DFU) {
+				if (dfu_get_yolo_checkra1n(client) == 0) {
+					info("Device entered yolo (checkra1n) DFU mode.\n");
+					
+					// send pongo
+					if (send_pongo_image(client) != 0) {
+						mutex_unlock(&client->device_event_mutex);
+						if (!(client->flags & FLAG_QUIT)) {
+							error("ERROR: Failed to upload pongo image\n");
+						}
+						return -1;
+					}
+					
+					info("Waiting for device to disconnect...\n");
+					cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000000);
+					if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
+						mutex_unlock(&client->device_event_mutex);
+						if (!(client->flags & FLAG_QUIT)) {
+							error("ERROR: Device did not disconnect. Reset device and try again.\n");
+						}
+						return -1;
+					}
+					
+					info("Waiting for device to enter pongo mode...\n");
+					cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 500000000);
+				}
+			}
+			
+			if (client->mode == MODE_PONGO) {
+				info("Found pongo mode\n");
+				
+				if(client->dfu == NULL) {
+					if (dfu_client_new(client) < 0) {
+						mutex_unlock(&client->device_event_mutex);
+						if (!(client->flags & FLAG_QUIT)) {
+							error("ERROR: Failed to create client\n");
+						}
+						return -1;
+					}
+				}
+				
+				int is_pongo_only = 0;
+				int is_tethered = 0;
+				unsigned int boot_delay = 0;
+				if (client->flags & FLAG_BOOT_PONGO) {
+					is_pongo_only = 1;
+				}
+				if (client->flags & FLAG_TETHERED) {
+					is_tethered = 1;
+				}
+				if (client->device->product_type && strncmp(client->device->product_type, "AppleTV", 7) == 0) {
+					boot_delay = 10;
+				}
+				if (pongo_shell(client,
+								client->device,
+								&client->dfu->client,
+								is_pongo_only,
+								is_tethered,
+								boot_delay)) {
+					mutex_unlock(&client->device_event_mutex);
+					if (!(client->flags & FLAG_QUIT)) {
+						error("ERROR: Failed to execute pongo shell\n");
+					}
+					return -1;
+				}
+				
+				if (client->flags & FLAG_BOOT_PONGO) {
+					mutex_unlock(&client->device_event_mutex);
+					return 0;
+				}
+				
+				info("Waiting for device to disconnect...\n");
+				cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000000);
+				if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
+					mutex_unlock(&client->device_event_mutex);
+					if (!(client->flags & FLAG_QUIT)) {
+						error("ERROR: Device did not disconnect. Reset device and try again.\n");
+					}
+					return -1;
+				}
+				
+				info("Waiting for device to enter restore mode...\n");
+				cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 500000000);
+			}
+		}
+#endif
+		
 		if (client->mode != MODE_RESTORE || (client->flags & FLAG_QUIT)) {
 			mutex_unlock(&client->device_event_mutex);
 			error("ERROR: Device failed to enter restore mode.\n");
@@ -1660,6 +3258,83 @@ void idevicerestore_client_free(struct idevicerestore_client_t* client)
 	if (client->preflight_info) {
 		plist_free(client->preflight_info);
 	}
+#ifdef HAVE_TURDUS_MERULA
+	if (client->signed_manifest) {
+		plist_free(client->signed_manifest);
+	}
+	if (client->bbfw) {
+		free(client->bbfw);
+	}
+	if (client->alternative_bbfw_manifest) {
+		plist_free(client->alternative_bbfw_manifest);
+	}
+	if (client->alternative_bbfw) {
+		free(client->alternative_bbfw);
+	}
+	if (client->sefw) {
+		free(client->sefw);
+	}
+	if (client->rsepfw) {
+		free(client->rsepfw);
+	}
+	if (client->alternative_ibss) {
+		free(client->alternative_ibss);
+	}
+	if (client->t_LLB) {
+		free(client->t_LLB);
+	}
+	if (client->t_AppleLogo) {
+		free(client->t_AppleLogo);
+	}
+	if (client->t_BatteryCharging0) {
+		free(client->t_BatteryCharging0);
+	}
+	if (client->t_BatteryCharging1) {
+		free(client->t_BatteryCharging1);
+	}
+	if (client->t_BatteryFull) {
+		free(client->t_BatteryFull);
+	}
+	if (client->t_BatteryLow0) {
+		free(client->t_BatteryLow0);
+	}
+	if (client->t_BatteryLow1) {
+		free(client->t_BatteryLow1);
+	}
+	if (client->t_BatteryPlugin) {
+		free(client->t_BatteryPlugin);
+	}
+	if (client->t_RecoveryMode) {
+		free(client->t_RecoveryMode);
+	}
+	if (client->t_iBoot) {
+		free(client->t_iBoot);
+	}
+	if (client->local_shsh) {
+		free(client->local_shsh);
+	}
+	if (ap_shsh_path) {
+		free(ap_shsh_path);
+	}
+	if (client->cryptex1_nonce_seed) {
+		free(client->cryptex1_nonce_seed);
+	}
+	if (client->rsep_img4) {
+		free(client->rsep_img4);
+	}
+	if (client->img4_manifest) {
+		free(client->img4_manifest);
+	}
+	if (client->img4_manifest_hash) {
+		free(client->img4_manifest_hash);
+	}
+	if (client->sep_shellcode_block) {
+		free(client->sep_shellcode_block);
+	}
+	if (client->signed_variant) {
+		free(client->signed_variant);
+	}
+#endif
 	free(client->restore_variant);
 	free(client);
 }
@@ -1756,7 +3431,11 @@ int main(int argc, char* argv[]) {
 	}
 
 	idevicerestore_client = client;
-
+	
+#ifdef HAVE_TURDUS_MERULA
+	client->disable_serial_output = 1;
+#endif
+	
 #ifdef WIN32
 	signal(SIGINT, handle_signal);
 	signal(SIGTERM, handle_signal);
@@ -1783,8 +3462,14 @@ int main(int argc, char* argv[]) {
 #else
 #define P_FLAG ""
 #endif
+	
+#ifdef HAVE_TURDUS_MERULA
+#define TURDUS_MERULA_FLAG "wojb:f:r:"
+#else
+#define TURDUS_MERULA_FLAG ""
+#endif
 
-	while ((opt = getopt_long(argc, argv, "dhces:xtli:u:nC:kyPRT:zv" P_FLAG, longopts, &optindex)) > 0) {
+	while ((opt = getopt_long(argc, argv, "dhces:xtli:u:nC:kyPRT:zvwojb:f:r:" P_FLAG TURDUS_MERULA_FLAG, longopts, &optindex)) > 0) {
 		switch (opt) {
 		case 'h':
 			usage(argc, argv, 0);
@@ -1802,6 +3487,52 @@ int main(int argc, char* argv[]) {
 		case 'c':
 			client->flags |= FLAG_CUSTOM;
 			break;
+
+#ifdef HAVE_TURDUS_MERULA
+		case 'w':
+			client->flags |= FLAG_ERASE | FLAG_DOWNGRADE;
+			break;
+				
+		case 'o':
+			client->flags |= FLAG_ERASE | FLAG_DOWNGRADE | FLAG_TETHERED;
+			break;
+
+		case 'b':
+			if (!*optarg) {
+				error("ERROR: PATH argument for --bbfw must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			if (read_file_safe(optarg, (void**)&client->bbfw, &client->bbfw_len, 0x8000000) != 0) {
+				return EXIT_FAILURE;
+			}
+			client->use_specific_fwver_component = 1;
+			break;
+
+		case 'f':
+			if (!*optarg) {
+				error("ERROR: PATH argument for --sefw must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			if (read_file_safe(optarg, (void**)&client->sefw, &client->sefw_len, 0x8000000) != 0) {
+				return EXIT_FAILURE;
+			}
+			client->use_specific_fwver_component = 1;
+			break;
+				
+		case 'r':
+			if (!*optarg) {
+				error("ERROR: PATH argument for --rsepfw must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			if (read_file_safe(optarg, (void**)&client->rsepfw, &client->rsepfw_len, 0x8000000) != 0) {
+				return EXIT_FAILURE;
+			}
+			client->use_specific_fwver_component = 1;
+			break;
+#endif
 
 		case 's': {
 			if (!*optarg) {
@@ -1911,7 +3642,7 @@ int main(int argc, char* argv[]) {
 		case 'T': {
 			size_t root_ticket_len = 0;
 			unsigned char* root_ticket = NULL;
-			if (read_file(optarg, (void**)&root_ticket, &root_ticket_len) != 0) {
+			if (read_file_safe(optarg, (void**)&root_ticket, &root_ticket_len, 0x800000) != 0) {
 				return EXIT_FAILURE;
 			}
 			client->root_ticket = root_ticket;
@@ -1924,6 +3655,13 @@ int main(int argc, char* argv[]) {
 			ipsw_info = 1;
 			break;
 
+#ifdef HAVE_TURDUS_MERULA
+		case 'j':
+			client->flags |= FLAG_DOWNGRADE;
+			client->flags |= FLAG_BOOT_PONGO;
+			break;
+#endif
+
 		case 1:
 			client->flags |= FLAG_IGNORE_ERRORS;
 			break;
@@ -1932,6 +3670,159 @@ int main(int argc, char* argv[]) {
 			free(client->restore_variant);
 			client->restore_variant = strdup(optarg);
 			break;
+
+#ifdef HAVE_TURDUS_MERULA
+		case 3:
+			free(client->signed_variant);
+			client->signed_variant = strdup(optarg);
+			break;
+
+		case 4:
+			ap_shsh_path = strdup(optarg);
+			client->use_custom_ticket = 1;
+			break;
+
+		case 5:
+			if (client->sep_shellcode_block) {
+				free(client->sep_shellcode_block);
+				client->sep_shellcode_block = NULL;
+			}
+			if (read_file_safe(optarg, (void**)&client->sep_shellcode_block, &client->sep_shellcode_block_len, 0x400) != 0) {
+				return EXIT_FAILURE;
+			}
+			info("Using SEP shellcode ciphertext block, found at %s length %zu\n", optarg, client->sep_shellcode_block_len);
+			client->sep_fwload_race = 1;
+			break;
+
+		case 6:
+			if (!*optarg) {
+				error("ERROR: PATH argument for --signed-manifest must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			uint8_t* _manifest_bin = NULL;
+			size_t _manifest_len = 0;
+			if (read_file_safe(optarg, (void**)&_manifest_bin, &_manifest_len, 0x800000) != 0) {
+				return EXIT_FAILURE;
+			}
+			if (memcmp(_manifest_bin, "bplist00", 8) == 0) {
+				plist_from_bin((const char *)_manifest_bin, _manifest_len, &client->signed_manifest);
+			}
+			else {
+				plist_from_xml((const char *)_manifest_bin, _manifest_len, &client->signed_manifest);
+			}
+			free(_manifest_bin);
+			client->use_specific_fwver_component = 1;
+			break;
+
+		case 11:
+			if (client->sep_shellcode_block) {
+				free(client->sep_shellcode_block);
+				client->sep_shellcode_block = NULL;
+			}
+			if (read_file_safe(optarg, (void**)&client->sep_shellcode_block, &client->sep_shellcode_block_len, 0x400) != 0) {
+				return EXIT_FAILURE;
+			}
+			info("Using SEP pte ciphertext block, found at %s length %zu\n", optarg, client->sep_shellcode_block_len);
+			client->sep_boot_tz0_race = 1;
+			break;
+
+		case 12:
+			client->disable_serial_output = 0;
+			break;
+				
+		case 13:
+			client->flags |= FLAG_DOWNGRADE;
+			client->flags |= FLAG_BOOT_PONGO;
+			client->get_shc_block = 1;
+			break;
+				
+		case 14:
+			client->flags |= FLAG_DOWNGRADE;
+			client->flags |= FLAG_BOOT_PONGO;
+			client->get_pte_block = 1;
+			break;
+				
+		case 15:
+			client->flags |= FLAG_ALLOW_UNSUPPORTED;
+			break;
+
+		case 16:
+			print_module_hash("Pongo.bin", Pongo_bin, Pongo_bin_len);
+			print_module_hash("cpf", cpf_bin, cpf_bin_len);
+			print_module_hash("kpf", kpf_bin, kpf_bin_len);
+			print_module_hash("sep_racer", sep_racer_bin, sep_racer_bin_len);
+			print_module_hash("overlay.dmg", overlay_bin, overlay_bin_len);
+			print_module_hash("union.dmg", union_bin, union_bin_len);
+			return EXIT_SUCCESS;
+				
+		case 17:
+			if (!*optarg) {
+				error("ERROR: PATH argument for --alternative-bbfw-manifest must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+		{
+			uint8_t* _manifest_bin = NULL;
+			size_t _manifest_len = 0;
+			if (read_file_safe(optarg, (void**)&_manifest_bin, &_manifest_len, 0x800000) != 0) {
+				return EXIT_FAILURE;
+			}
+			if (memcmp(_manifest_bin, "bplist00", 8) == 0) {
+				plist_from_bin((const char *)_manifest_bin, _manifest_len, &client->alternative_bbfw_manifest);
+			}
+			else {
+				plist_from_xml((const char *)_manifest_bin, _manifest_len, &client->alternative_bbfw_manifest);
+			}
+			free(_manifest_bin);
+		}
+			break;
+			
+		case 18:
+			free((void*)client->alternative_hardware_model);
+			client->alternative_hardware_model = strdup(optarg);
+			break;
+			
+		case 19:
+			if (!*optarg) {
+				error("ERROR: PATH argument for --alternative-bbfw must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			if (read_file_safe(optarg, (void**)&client->alternative_bbfw, &client->alternative_bbfw_len, 0x8000000) != 0) {
+				return EXIT_FAILURE;
+			}
+			break;
+
+		case 20:
+			if (gAPIURL) {
+				error("ERROR: API URL has already been set!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			if (!*optarg) {
+				error("ERROR: URL argument for --api-url must not be empty!\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			char *baseurl = NULL;
+			if (!strncmp(optarg, "http://", 7) && (strlen(optarg) > 7) && (optarg[7] != '/')) {
+				baseurl = optarg + 7;
+			}
+			else if (!strncmp(optarg, "https://", 8) && (strlen(optarg) > 8) && (optarg[8] != '/')) {
+				baseurl = optarg + 8;
+			}
+			if (baseurl) {
+				gAPIURL = strdup(optarg);
+			}
+			else {
+				error("ERROR: URL argument for --api-url is invalid, must start with http:// or https://\n");
+				usage(argc, argv, 1);
+				return EXIT_FAILURE;
+			}
+			break;
+
+#endif
 
 		default:
 			usage(argc, argv, 1);
@@ -2004,6 +3895,7 @@ irecv_device_t get_irecv_device(struct idevicerestore_client_t *client)
 	case _MODE_DFU:
 	case _MODE_PORTDFU:
 	case _MODE_RECOVERY:
+	case _MODE_PONGO:
 		return dfu_get_irecv_device(client);
 
 	default:
@@ -2257,18 +4149,175 @@ int get_preboard_manifest(struct idevicerestore_client_t* client, plist_t build_
 	return res;
 }
 
+#ifdef HAVE_TURDUS_MERULA
+int force_get_tss_response(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* tss)
+{
+	plist_t request = NULL;
+	plist_t response = NULL;
+	*tss = NULL;
+	
+	info("Trying to fetch new SHSH blob\n");
+	
+	/* populate parameters */
+	plist_t parameters = plist_new_dict();
+	plist_dict_merge(&parameters, client->parameters);
+	
+	plist_dict_set_item(parameters, "ApECID", plist_new_uint(client->ecid));
+	if (client->nonce) {
+		plist_dict_set_item(parameters, "ApNonce", plist_new_data((const char*)client->nonce, client->nonce_size));
+	}
+	
+	if (!plist_dict_get_item(parameters, "SepNonce")) {
+		unsigned char* sep_nonce = NULL;
+		unsigned int sep_nonce_size = 0;
+		get_sep_nonce(client, &sep_nonce, &sep_nonce_size);
+		if (sep_nonce) {
+			plist_dict_set_item(parameters, "ApSepNonce", plist_new_data((const char*)sep_nonce, sep_nonce_size));
+			free(sep_nonce);
+		}
+	}
+	
+	plist_dict_set_item(parameters, "ApProductionMode", plist_new_bool(1));
+	if (client->image4supported) {
+		plist_dict_set_item(parameters, "ApSecurityMode", plist_new_bool(1));
+		plist_dict_set_item(parameters, "ApSupportsImg4", plist_new_bool(1));
+	} else {
+		plist_dict_set_item(parameters, "ApSupportsImg4", plist_new_bool(0));
+	}
+	
+	tss_parameters_add_from_manifest(parameters, build_identity, true);
+	
+	/* create basic request */
+	request = tss_request_new(NULL);
+	if (request == NULL) {
+		error("ERROR: Unable to create TSS request\n");
+		plist_free(parameters);
+		return -1;
+	}
+	
+	/* add common tags from manifest */
+	if (tss_request_add_common_tags(request, parameters, NULL) < 0) {
+		error("ERROR: Unable to add common tags to TSS request\n");
+		plist_free(request);
+		plist_free(parameters);
+		return -1;
+	}
+	
+	/* add tags from manifest */
+	if (tss_request_add_ap_tags(request, parameters, NULL) < 0) {
+		error("ERROR: Unable to add common tags to TSS request\n");
+		plist_free(request);
+		plist_free(parameters);
+		return -1;
+	}
+	
+	if (client->image4supported) {
+		/* add personalized parameters */
+		if (tss_request_add_ap_img4_tags(request, parameters) < 0) {
+			error("ERROR: Unable to add img4 tags to TSS request\n");
+			plist_free(request);
+			plist_free(parameters);
+			return -1;
+		}
+	} else {
+		/* add personalized parameters */
+		if (tss_request_add_ap_img3_tags(request, parameters) < 0) {
+			error("ERROR: Unable to add img3 tags to TSS request\n");
+			plist_free(request);
+			plist_free(parameters);
+			return -1;
+		}
+	}
+	
+	if (client->mode == MODE_NORMAL) {
+		/* normal mode; request baseband ticket aswell */
+		plist_t pinfo = NULL;
+		normal_get_firmware_preflight_info(client, &pinfo);
+		if (pinfo) {
+			plist_dict_copy_data(parameters, pinfo, "BbNonce", "Nonce");
+			plist_dict_copy_uint(parameters, pinfo, "BbChipID", "ChipID");
+			plist_dict_copy_uint(parameters, pinfo, "BbGoldCertId", "CertID");
+			plist_dict_copy_data(parameters, pinfo, "BbSNUM", "ChipSerialNo");
+			
+			/* add baseband parameters */
+			tss_request_add_baseband_tags(request, parameters, NULL);
+			
+			plist_dict_copy_uint(parameters, pinfo, "eUICC,ChipID", "EUICCChipID");
+			if (plist_dict_get_uint(parameters, "eUICC,ChipID") >= 5) {
+				plist_dict_copy_data(parameters, pinfo, "eUICC,EID", "EUICCCSN");
+				plist_dict_copy_data(parameters, pinfo, "eUICC,RootKeyIdentifier", "EUICCCertIdentifier");
+				plist_dict_copy_data(parameters, pinfo, "EUICCGoldNonce", NULL);
+				plist_dict_copy_data(parameters, pinfo, "EUICCMainNonce", NULL);
+				
+				/* add vinyl parameters */
+				tss_request_add_vinyl_tags(request, parameters, NULL);
+			}
+		}
+		client->firmware_preflight_info = pinfo;
+		pinfo = NULL;
+		
+		normal_get_preflight_info(client, &pinfo);
+		client->preflight_info = pinfo;
+	}
+	
+	/* send request and grab response */
+	if (idevicerestore_debug) {
+		debug_plist(request);
+	}
+	response = tss_request_send(request, client->tss_url);
+	if (response == NULL) {
+		info("ERROR: Unable to send TSS request\n");
+		plist_free(request);
+		plist_free(parameters);
+		return -1;
+	}
+	
+	info("Received SHSH blobs\n");
+	
+	plist_free(request);
+	plist_free(parameters);
+	
+	*tss = response;
+	
+	return 0;
+}
+#endif
+
 int get_tss_response(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* tss)
 {
 	plist_t request = NULL;
 	plist_t response = NULL;
 	*tss = NULL;
 
-	if ((client->build_major <= 8) || (client->flags & FLAG_CUSTOM)) {
-		error("checking for local shsh\n");
+	if ((client->build_major <= 8) ||
+#ifdef HAVE_TURDUS_MERULA
+		(client->flags & (FLAG_CUSTOM | FLAG_DOWNGRADE))
+#else
+		(client->flags & FLAG_CUSTOM)
+#endif
+		) {
+		info("checking for local shsh\n");
 
 		/* first check for local copy */
 		char zfn[1024];
 		if (client->version) {
+#ifdef HAVE_TURDUS_MERULA
+			if (client->local_shsh) {
+				*tss = plist_copy(client->local_shsh);
+				info("Using cached SHSH\n");
+				return 0;
+			}
+			else if ((client->flags & FLAG_TETHERED) || (client->flags & FLAG_BOOT_PONGO)) {
+				if (force_get_tss_response(client, client->signed_identity, &client->local_shsh) < 0) {
+					error("ERROR: Unable to get latest SHSH\n");
+					return -1;
+				}
+				*tss = plist_copy(client->local_shsh);
+				info("Using latest SHSH\n");
+				return 0;
+			}
+			else
+#endif
 			if (client->cache_dir) {
 				snprintf(zfn, sizeof(zfn), "%s/shsh/%" PRIu64 "-%s-%s.shsh", client->cache_dir, client->ecid, client->device->product_type, client->version);
 			} else {
@@ -2321,6 +4370,11 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	if (*tss) {
 		info("Using cached SHSH\n");
 		return 0;
+#ifdef HAVE_TURDUS_MERULA
+	} else if (client->flags & FLAG_DOWNGRADE) {
+		error("Refusing to proceed without saved ticket\n");
+		return -1;
+#endif
 	} else {
 		info("Trying to fetch new SHSH blob\n");
 	}
@@ -2428,6 +4482,9 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	}
 
 	/* send request and grab response */
+	if (idevicerestore_debug) {
+		debug_plist(request);
+	}
 	response = tss_request_send(request, client->tss_url);
 	if (response == NULL) {
 		info("ERROR: Unable to send TSS request\n");
@@ -2992,6 +5049,593 @@ int build_identity_get_component_path(plist_t build_identity, const char* compon
 	*path = filename;
 	return 0;
 }
+
+#ifdef HAVE_TURDUS_MERULA
+int build_identity_get_component_digest(plist_t build_identity, const char* component, uint8_t** buffer, size_t *len)
+{
+	plist_t manifest_node = plist_dict_get_item(build_identity, "Manifest");
+	if (!manifest_node || plist_get_node_type(manifest_node) != PLIST_DICT) {
+		error("ERROR: Unable to find manifest node\n");
+		return -1;
+	}
+	
+	plist_t component_node = plist_dict_get_item(manifest_node, component);
+	if (!component_node || plist_get_node_type(component_node) != PLIST_DICT) {
+		error("ERROR: Unable to find component node for %s\n", component);
+		return -1;
+	}
+	
+	plist_t digest_node = plist_dict_get_item(component_node, "Digest");
+	if (!digest_node || plist_get_node_type(digest_node) != PLIST_DATA) {
+		error("ERROR: Unable to find digest node\n");
+		return -1;
+	}
+	
+	uint8_t* digest_data = NULL;
+	size_t digest_data_len = 0;
+	plist_get_data_val(digest_node, (char**)&digest_data, (uint64_t*)&digest_data_len);
+	if (!digest_data) {
+		error("ERROR: Unable to find digest data\n");
+		if (digest_data) free(digest_data);
+		return -1;
+	}
+	uint8_t* _dgst_hash = (uint8_t*)digest_data;
+	debug("%s digest: ", component);
+	for (int i = 0; i < digest_data_len; i++) {
+		debug("%02x", _dgst_hash[i]);
+	}
+	debug("\n");
+	
+	if (buffer && len) {
+		*buffer = digest_data;
+		*len = digest_data_len;
+	}
+	else {
+		if (digest_data) free(digest_data);
+	}
+	digest_data = NULL;
+	digest_data_len = 0;
+	return 0;
+}
+
+static int validate_fdr_firmware_component_hash(struct idevicerestore_client_t* client, plist_t build_identity, const char* component)
+{
+	int rv = -1;
+	plist_t tss_data = NULL;
+	char* im4m_data = NULL;
+	uint64_t im4m_data_len = 0;
+	uint8_t* hash = NULL;
+	size_t hash_len = 0;
+	
+	static uint8_t customer_dgst[] = {
+		0x53, 0x40, 0xb6, 0xa0, 0x59, 0xbd, 0xb7, 0x32,
+		0xe7, 0x15, 0xe7, 0xbb, 0x1b, 0x29, 0x2e, 0xdc,
+		0xd4, 0x5c, 0x2a, 0x8d, 0x1d, 0x07, 0xe6, 0x03,
+		0x9d, 0x3f, 0x33, 0x8d, 0x7c, 0x44, 0x28, 0xab
+	};
+	static uint8_t factory_dgst[] = {
+		0x55, 0x67, 0xc6, 0xbe, 0x8a, 0xbd, 0xca, 0xff,
+		0x00, 0x8d, 0x00, 0x1e, 0xd5, 0x95, 0x51, 0x49,
+		0xc4, 0x1c, 0x3d, 0xfc, 0x17, 0x56, 0xaf, 0x01,
+		0x14, 0xe3, 0x84, 0xc7, 0xcd, 0xc1, 0x41, 0x1f
+	};
+	
+	if (!client || !build_identity || !component) {
+		rv = -1;
+		goto end;
+	}
+	
+	if (!build_identity_has_component(build_identity, component)) {
+		rv = 1; // not used
+		goto end;
+	}
+	
+	tss_data = plist_copy(client->local_shsh);
+	if (!tss_data) {
+		error("ERROR: local TSS data not found\n");
+		rv = -2;
+		goto end;
+	}
+	plist_t apimg4ticket = plist_dict_get_item(tss_data, "ApImg4Ticket");
+	if (!apimg4ticket) {
+		error("ERROR: no ApImg4Ticket dict\n");
+		rv = -3;
+		goto end;
+	}
+	plist_get_data_val(apimg4ticket, &im4m_data, &im4m_data_len);
+	if (!im4m_data) {
+		error("ERROR: no img4 manifest\n");
+		rv = -4;
+		goto end;
+	}
+	
+	int result = get_img4_digest_from_manifest(client, build_identity, component, (const uint8_t *)im4m_data, im4m_data_len, &hash, &hash_len);
+	if (result == 2) {
+		rv = 2; // not in im4p
+		goto end;
+	}
+	if (result < 0) {
+		rv = result;
+		goto end;
+	}
+	
+	if (hash_len != 0x20) {
+		rv = 4; // unknown hash length
+		goto end;
+	}
+	
+	if (!memcmp(hash, &customer_dgst, 0x20)) {
+		rv = 0; // customer DGST
+		goto end;
+	}
+	
+	if (!memcmp(hash, &factory_dgst, 0x20)) {
+		rv = 3; // factory DGST
+		goto end;
+	}
+	
+	rv = 4; // unknown DGST
+	
+end:
+	if (hash) free(hash);
+	if (tss_data) free(tss_data);
+	if (im4m_data) free(im4m_data);
+	return rv;
+}
+
+static int validate_memory_firmware_component_hash(struct idevicerestore_client_t* client, plist_t build_identity,
+												   const char* component, unsigned char* compdata, unsigned int compdata_len, plist_t tss,
+												   bool verify_manifest, bool verify_payload, uint32_t* result)
+{
+	int rv = -1;
+	unsigned char* im4p_data = NULL;
+	unsigned int im4p_data_len = 0;
+	plist_t tss_data = NULL;
+	char* im4m_data = NULL;
+	uint64_t im4m_data_len = 0;
+	
+	if (!client || !build_identity || !component) {
+		rv = -1;
+		goto end;
+	}
+	
+	if (!build_identity_has_component(build_identity, component)) {
+		rv = 1;
+		goto end;
+	}
+	
+	if (verify_payload) {
+		if (!compdata || !!compdata_len) {
+			rv = -2;
+			goto end;
+		}
+	}
+	
+	if (verify_manifest) {
+		if (!tss) {
+			rv = -3;
+			goto end;
+		}
+	}
+	
+	debug("---- checking %s hash ----\n", component);
+	
+	if (verify_payload) {
+		im4p_data_len = compdata_len;
+		im4p_data = malloc(im4p_data_len);
+		if (!im4p_data) {
+			error("ERROR: malloc failed\n");
+			rv = -4;
+			goto end;
+		}
+		memcpy(im4p_data, compdata, im4p_data_len);
+		img4_override_payload_tag(component, im4p_data);
+	}
+	
+	
+	if (verify_manifest) {
+		tss_data = plist_copy(tss);
+		if (!tss_data) {
+			error("ERROR: local TSS data not found\n");
+			rv = -5;
+			goto end;
+		}
+		plist_t apimg4ticket = plist_dict_get_item(tss_data, "ApImg4Ticket");
+		if (!apimg4ticket) {
+			error("ERROR: no ApImg4Ticket dict\n");
+			rv = -6;
+			goto end;
+		}
+		plist_get_data_val(apimg4ticket, &im4m_data, &im4m_data_len);
+		if (!im4m_data) {
+			error("ERROR: no img4 manifest\n");
+			rv = -7;
+			goto end;
+		}
+	}
+	
+	int res = validate_img4_digest(client, build_identity, component, im4p_data, im4p_data_len, (const uint8_t *)im4m_data, im4m_data_len, verify_manifest, verify_payload, result);
+	
+	if (res < 0) {
+		error("ERROR: hash validation failed\n");
+	}
+	
+	rv = res;
+	
+end:
+	if (im4p_data) free(im4p_data);
+	if (im4m_data) free(im4m_data);
+	if (tss_data) free(tss_data);
+	return rv;
+}
+
+static int validate_ipsw_firmware_component_hash(struct idevicerestore_client_t* client, plist_t build_identity, const char* component,
+												 bool verify_manifest, bool verify_payload, uint32_t* result)
+{
+	int rv = -1;
+	char* path = NULL;
+	unsigned char* im4p_data = NULL;
+	unsigned int im4p_data_len = 0;
+	plist_t tss_data = NULL;
+	char* im4m_data = NULL;
+	uint64_t im4m_data_len = 0;
+	uint32_t _result = 0;
+	
+	if (!client || !build_identity || !component) {
+		rv = -1;
+		goto end;
+	}
+	
+	if (!build_identity_has_component(build_identity, component)) {
+		rv = 1;
+		goto end;
+	}
+	
+	debug("---- checking %s hash ----\n", component);
+	
+	if (verify_payload) {
+		if (build_identity_get_component_path(build_identity, component, &path)) {
+			error("ERROR: Unable to find path: %s\n", component);
+			rv = -2;
+			goto end;
+		}
+		if (extract_component(client->ipsw, path, &im4p_data, &im4p_data_len) < 0) {
+			error("ERROR: Unable to extract component: %s\n", component);
+			rv = -3;
+			goto end;
+		}
+		img4_override_payload_tag(component, im4p_data);
+	}
+		
+	if (verify_manifest) {
+		tss_data = plist_copy(client->local_shsh);
+		if (!tss_data) {
+			error("ERROR: local TSS data not found\n");
+			rv = -4;
+			goto end;
+		}
+		plist_t apimg4ticket = plist_dict_get_item(tss_data, "ApImg4Ticket");
+		if (!apimg4ticket) {
+			error("ERROR: no ApImg4Ticket dict\n");
+			rv = -5;
+			goto end;
+		}
+		plist_get_data_val(apimg4ticket, &im4m_data, &im4m_data_len);
+		if (!im4m_data) {
+			error("ERROR: no img4 manifest\n");
+			rv = -6;
+			goto end;
+		}
+	}
+	
+	int res = validate_img4_digest(client, build_identity, component,
+								   im4p_data, im4p_data_len, (const uint8_t *)im4m_data, (size_t)im4m_data_len,
+								   verify_manifest, verify_payload, result);
+	
+	if (res < 0) {
+		error("ERROR: hash validation failed\n");
+	}
+	
+	rv = res;
+	
+end:
+	if (path) free(path);
+	if (im4p_data) free(im4p_data);
+	if (im4m_data) free(im4m_data);
+	if (tss_data) free(tss_data);
+	return rv;
+}
+
+int check_firmware_components(struct idevicerestore_client_t* client, plist_t build_identity)
+{
+	if (client->flags & FLAG_TETHERED) {
+		return 0;
+	}
+	
+	// it is untethered, so requires full verification
+#define IMG4_VALIDATE_NONE          (0)
+#define IMG4_VALIDATE_MANIFEST      (1u << 0)
+#define IMG4_VALIDATE_PAYLOAD       (1u << 1)
+#define IMG4_MANIFEST_MUST_MATCHED  (1u << 2)
+#define IMG4_PAYLOAD_MUST_MATCHED   (1u << 3)
+	
+#define IMG4_VALIDATE_ALL          (IMG4_VALIDATE_MANIFEST | IMG4_VALIDATE_PAYLOAD | IMG4_MANIFEST_MUST_MATCHED | IMG4_PAYLOAD_MUST_MATCHED)
+#define IMG4_VALIDATE_RESTORE      (IMG4_VALIDATE_MANIFEST | IMG4_VALIDATE_PAYLOAD | IMG4_PAYLOAD_MUST_MATCHED)
+	
+	struct filename_component_map {
+		uint32_t validate_flag;
+		const char *compname;
+	};
+	struct filename_component_map fn_comp[] = {
+		{ IMG4_VALIDATE_ALL,     "AOP" },
+		{ IMG4_VALIDATE_ALL,     "AVE" },
+		{ IMG4_VALIDATE_ALL,     "Ap,SystemVolumeCanonicalMetadata" },
+		{ IMG4_VALIDATE_ALL,     "AppleLogo" },
+		{ IMG4_VALIDATE_ALL,     "BatteryCharging0" },
+		{ IMG4_VALIDATE_ALL,     "BatteryCharging1" },
+		{ IMG4_VALIDATE_ALL,     "BatteryFull" },
+		{ IMG4_VALIDATE_ALL,     "BatteryLow0" },
+		{ IMG4_VALIDATE_ALL,     "BatteryLow1" },
+		{ IMG4_VALIDATE_ALL,     "BatteryPlugin" },
+		{ IMG4_VALIDATE_ALL,     "DeviceTree" },
+		{ IMG4_VALIDATE_ALL,     "Homer" },
+		{ IMG4_VALIDATE_ALL,     "KernelCache" },
+		{ IMG4_VALIDATE_ALL,     "LLB" },
+		{ IMG4_VALIDATE_ALL,     "Liquid" },
+		{ IMG4_VALIDATE_ALL,     "Multitouch" },
+		{ IMG4_VALIDATE_ALL,     "RecoveryMode" },
+		{ IMG4_VALIDATE_RESTORE, "RestoreDeviceTree" },
+		{ IMG4_VALIDATE_RESTORE, "RestoreKernelCache" },
+		{ IMG4_VALIDATE_RESTORE, "RestoreLogo" },
+		{ IMG4_VALIDATE_RESTORE, "RestoreRamDisk" },
+		{ IMG4_VALIDATE_RESTORE, "RestoreSEP" },
+		{ IMG4_VALIDATE_RESTORE, "RestoreTrustCache" },
+		{ IMG4_VALIDATE_ALL,     "SEP" },
+		{ IMG4_VALIDATE_ALL,     "StaticTrustCache" },
+		{ IMG4_VALIDATE_ALL,     "SystemVolume" },
+		{ IMG4_VALIDATE_RESTORE, "iBEC" },
+		{ IMG4_VALIDATE_RESTORE, "iBSS" },
+		{ IMG4_VALIDATE_ALL,     "iBoot" },
+		{ IMG4_VALIDATE_NONE,     NULL }
+	};
+	
+	int bypass_trustcache_check = 0;
+	{
+		// check Manifest hash
+		uint8_t* im4m_data = NULL;
+		uint64_t im4m_data_len = 0;
+		uint8_t* hash = NULL;
+		size_t hash_len = 0;
+		plist_t tss_data = plist_copy(client->local_shsh);
+		if (!tss_data) {
+			error("ERROR: local TSS data not found\n");
+			return -1;
+		}
+		plist_t apimg4ticket = plist_dict_get_item(tss_data, "ApImg4Ticket");
+		if (!apimg4ticket) {
+			error("ERROR: no ApImg4Ticket dict\n");
+			plist_free(tss_data);
+			return -1;
+		}
+		plist_get_data_val(apimg4ticket, (char**)&im4m_data, &im4m_data_len);
+		if (!im4m_data) {
+			error("ERROR: no img4 manifest\n");
+			plist_free(tss_data);
+			return -1;
+		}
+		if (get_image4_manifest_hash(im4m_data, im4m_data_len, 'rdsk', &hash, &hash_len) == 0) {
+			info("Found RestoreRamdisk digest\n");
+            debug("DGST: ");
+            int i;
+            for (i = 0; i < hash_len; i++) {
+                debug("%02x", hash[i]);
+            }
+            debug("\n");
+			if (hash_len == 0x14) {
+				uint8_t ota_rdsk_16A366[0x14] = {
+					0x81, 0x4D, 0xEA, 0x13, 0xEE, 0x34, 0xB3, 0x44, 0x52, 0x78, 0x02, 0xAA, 0x66, 0x6E, 0x75, 0xEB, 0x18, 0x81, 0x7C, 0xBF
+				};
+				uint8_t ota_rdsk_16A404[0x14] = {
+					0xE1, 0xAA, 0x8F, 0xA1, 0x35, 0x5C, 0x9E, 0x97, 0x76, 0x97, 0xC6, 0x10, 0xC7, 0xA7, 0x19, 0x7C, 0x3E, 0x5A, 0x93, 0xDE
+				};
+				if (memcmp(hash, ota_rdsk_16A366, 0x14) == 0 || memcmp(hash, ota_rdsk_16A404, 0x14) == 0) {
+					info("Found the weird image4 manifest\n");
+					bypass_trustcache_check = 1;
+				}
+			}
+			else if (hash_len == 0x30) {
+				uint8_t ota_rdsk_16A366[0x30] = {
+					0xEF, 0xC8, 0x07, 0x47, 0xB6, 0xF1, 0xC5, 0x1B, 0x6B, 0xC9, 0xB5, 0x00, 0x92, 0x14, 0xF6, 0x6F,
+					0x6F, 0x6A, 0x4C, 0x58, 0x9E, 0xA9, 0x55, 0x62, 0x7A, 0x0F, 0x39, 0x97, 0x11, 0x75, 0x21, 0xD2,
+					0xA3, 0xE7, 0xA3, 0x79, 0x54, 0xDD, 0xC1, 0x4C, 0x85, 0xF0, 0x44, 0x6A, 0xFC, 0x4D, 0x61, 0x61
+				};
+				uint8_t ota_rdsk_16A404[0x30] = {
+					0x97, 0xE9, 0x91, 0x48, 0x90, 0x4E, 0x57, 0xC5, 0xF7, 0x65, 0xA8, 0x0A, 0x0C, 0x00, 0x9A, 0xE5,
+					0xAC, 0xD1, 0x2E, 0x6C, 0x14, 0x89, 0x9C, 0xE6, 0xEF, 0x88, 0x0F, 0x14, 0xFD, 0x5C, 0x86, 0x0D,
+					0x23, 0x70, 0x38, 0x93, 0x5F, 0x8E, 0x6D, 0x78, 0x5E, 0x80, 0x5D, 0x47, 0xDD, 0xBF, 0xD2, 0xC2
+				};
+				if (memcmp(hash, ota_rdsk_16A366, 0x30) == 0 || memcmp(hash, ota_rdsk_16A404, 0x30) == 0) {
+					info("Found the weird image4 manifest\n");
+					bypass_trustcache_check = 1;
+				}
+			}
+		}
+		
+		if (tss_data) plist_free(tss_data);
+		if (im4m_data) free(im4m_data);
+		if (hash) free(hash);
+	}
+	uint32_t result = 0;
+	int res = 0;
+	int i = 0;
+	while (fn_comp[i].compname) {
+		result = 0;
+		if (bypass_trustcache_check) {
+			if (!strcmp(fn_comp[i].compname, "RestoreTrustCache")) {
+				goto skip_validate;
+			}
+			if (!strcmp(fn_comp[i].compname, "StaticTrustCache")) {
+				fn_comp[i].validate_flag = IMG4_VALIDATE_PAYLOAD | IMG4_PAYLOAD_MUST_MATCHED;
+			}
+		}
+		res = validate_ipsw_firmware_component_hash(client, build_identity,
+													fn_comp[i].compname,
+													(fn_comp[i].validate_flag & IMG4_VALIDATE_MANIFEST) ? 1 : 0,
+													(fn_comp[i].validate_flag & IMG4_VALIDATE_PAYLOAD) ? 1 : 0,
+													&result);
+		
+		debug("image validation result: %d:%08x [comp: %s, flag: %08x]\n",
+			  res, result,
+			  fn_comp[i].compname,
+			  fn_comp[i].validate_flag);
+		
+		switch (res) {
+			case 0: // valid
+				if (fn_comp[i].validate_flag & IMG4_MANIFEST_MUST_MATCHED) {
+					if (!(result & IMG4_DIGEST_MATCHED_MANIFEST)) {
+						error("failed to image4 manifest check [comp: %s, res: %08x]\n", fn_comp[i].compname, result);
+						return -1;
+					}
+				}
+				if (fn_comp[i].validate_flag & IMG4_PAYLOAD_MUST_MATCHED) {
+					if (!(result & IMG4_DIGEST_MATCHED_PAYLOAD)) {
+						error("failed to image4 payload check [comp: %s, res: %08x]\n", fn_comp[i].compname, result);
+						return -1;
+					}
+				}
+				break;
+				
+			case 1: // not used
+				break;
+				
+			case 2: // not in im4p
+				if (fn_comp[i].validate_flag & IMG4_MANIFEST_MUST_MATCHED) {
+					error("image4 manifest check is required, but digest not found from manifest [comp: %s]\n", fn_comp[i].compname);
+					return -1;
+				}
+				break;
+				
+			default:
+				return -1;
+		}
+		
+	skip_validate:
+		i++;
+	}
+	
+	// check OS digest
+	if (client->build_major >= 14) { // iOS 9 or lower version does not have OS digest
+		result = 0;
+		res = validate_ipsw_firmware_component_hash(client, build_identity, "OS", 1, 0, &result);
+		debug("image validation result: %d:%08x [comp: %s, manifest: %d:%d, payload: %d:%d]\n", res, result, "OS", 1, 1, 0, 0);
+		
+		switch (res) {
+			case 0: // valid
+				if (!(result & IMG4_DIGEST_MATCHED_MANIFEST))  {
+					error("failed to image4 manifest check [comp: %s, res: %08x]\n", "OS", result);
+					return -1;
+				}
+				break;
+				
+			case 1: // not used
+				break;
+				
+			case 2: // TODO: no rosi digest found in manifest
+				if (client->build_major == 14) {
+					info("warn: no rosi digest found in manifest\n");
+					client->need_asr_patch = 1;
+					break;
+				}
+				return -1;
+				
+			default:
+				return -1;
+		}
+	}
+	
+	// check FDR digest
+	struct fdr_component_map {
+		bool manifest;
+		const char *compname;
+	};
+	struct fdr_component_map fdr_comp[] = {
+		{ 1, "ftap" },
+		{ 1, "ftsp" },
+		{ 1, "rfta" },
+		{ 1, "rfts" },
+		{ 0, NULL, }
+	};
+	
+	i = 0;
+	uint32_t has_weird_hash = 0;
+	while (fdr_comp[i].compname) {
+		res = validate_fdr_firmware_component_hash(client, build_identity, fdr_comp[i].compname);
+		debug("FDR validation result: %d [comp: %s]\n", res, fn_comp[i].compname);
+		
+		switch (res) {
+			case 0: // customer
+				info("Found customer %s digest in image4 manifest\n", fdr_comp[i].compname);
+				break;
+				
+			case 1: // not used
+				break;
+				
+			case 2: // TODO: Some old shsh1 does not accidentally save these
+				error("ERROR: %s digest not found\n", fdr_comp[i].compname);
+				return -1;
+				
+			case 3: // TODO: This appears to be a chain used in the factory
+				info("Found non-customer %s digest in image4 manifest\n", fdr_comp[i].compname);
+				has_weird_hash |= 1 << 0;
+				break;
+				
+			case 4: // TODO: Unknown DGST
+				info("WARNING: Found unknown %s digest\n", fdr_comp[i].compname);
+				has_weird_hash |= 1 << 1;
+				break;
+				
+			default:
+				return -1;
+		}
+		i++;
+	}
+	
+	if (has_weird_hash) {
+		const char* errstr = NULL;
+		if (has_weird_hash & (1 << 1)) {
+			errstr = "unknown FDR hashes.     ";
+		}
+		else {
+			errstr = "non-customer FDR hashes.";
+		}
+		if (client->flags & FLAG_INTERACTIVE) {
+			char input[64];
+			printf("######################## [ WARNING ] ########################\n"
+				   "# Found %s                            #\n"
+				   "# This means that the restore may fail causing FDR error.   #\n"
+				   "# If you want to continue, please type YES and press ENTER. #\n"
+				   "#############################################################\n", errstr);
+			while (1) {
+				printf("> ");
+				fflush(stdout);
+				fflush(stdin);
+				input[0] = '\0';
+				get_user_input(input, 63, 0);
+				if (client->flags & FLAG_QUIT) {
+					return -1;
+				}
+				if (*input != '\0' && !strcmp(input, "YES")) {
+					break;
+				} else {
+					printf("Invalid input. Please type YES or hit CTRL+C to abort.\n");
+					continue;
+				}
+			}
+		}
+	}
+	return 0;
+}
+#endif
 
 const char* get_component_name(const char* filename)
 {

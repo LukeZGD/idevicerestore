@@ -52,6 +52,10 @@ int dfu_get_ap_nonce(struct idevicerestore_client_t* client, unsigned char** non
 int dfu_get_sep_nonce(struct idevicerestore_client_t* client, unsigned char** nonce, unsigned int* nonce_size);
 int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_identity);
 
+#ifdef HAVE_TURDUS_MERULA
+int dfu_get_yolo_checkra1n(struct idevicerestore_client_t* client);
+int dfu_get_pwned_dfu(struct idevicerestore_client_t* client);
+#endif
 
 #ifdef __cplusplus
 }

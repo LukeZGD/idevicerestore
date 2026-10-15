@@ -299,8 +299,8 @@ Please make sure your contribution adheres to:
 * Twitter: https://twitter.com/libimobiledev
 
 ## License
-
-This project is licensed under the [GNU Lesser General Public License v3.0](https://www.gnu.org/licenses/lgpl-3.0.en.html),
+If you build with libhfsplus, this project is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.en.html), included in the repository in the `COPYING_0` file.
+If not, this project is licensed under the [GNU Lesser General Public License v3.0](https://www.gnu.org/licenses/lgpl-3.0.en.html),
 also included in the repository in the `COPYING` file.
 
 ## Credits

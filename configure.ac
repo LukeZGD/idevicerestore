@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.68])
-AC_INIT([idevicerestore], [m4_esyscmd(./git-version-gen $RELEASE_VERSION)], [https://github.com/libimobiledevice/idevicerestore/issues], [], [https://libimobiledevice.org])
+AC_INIT([turdus_merula-idevicerestore], [m4_esyscmd(./git-version-gen $RELEASE_VERSION)], [https://github.com/turdus-m3rula/bugTracker], [], [https://sep.lol])
 AM_INIT_AUTOMAKE([dist-bzip2 no-dist-gzip])
 m4_ifdef([AM_SILENT_RULES], [AM_SILENT_RULES])
 AC_CONFIG_SRCDIR([src/])
@@ -23,6 +23,7 @@ LIMD_GLUE_VERSION=1.3.0
 LIBTATSU_VERSION=1.0.4
 LIBZIP_VERSION=1.0
 LIBCURL_VERSION=7.0
+LIBFRAGMENTZIP_VERSION=54
 
 AC_SUBST(LIBIRECOVERY_VERSION)
 AC_SUBST(LIBIMOBILEDEVICE_VERSION)
@@ -159,6 +160,28 @@ if test "x$have_limera1n" = "xyes"; then
   AC_DEFINE(HAVE_LIMERA1N, 1, [Define if limera1n support is available])
 fi
 AM_CONDITIONAL([HAVE_LIMERA1N],[test "x$have_limera1n" = "xyes"])
+
+AC_ARG_WITH([turdusmerula],
+            [AS_HELP_STRING([--with-turdusmerula],
+            [build with support for turdus merula (default is no)])],
+            [have_turdusmerula=$withval],
+            [have_turdusmerula=no])
+if test "x$have_turdusmerula" = "xyes"; then
+  AC_DEFINE(HAVE_TURDUS_MERULA, 1, [Define if turdus merula support is available])
+  AC_SUBST(LIBFRAGMENTZIP_VERSION)
+  PKG_CHECK_MODULES(libfragmentzip, libfragmentzip >= $LIBFRAGMENTZIP_VERSION)
+fi
+AM_CONDITIONAL([HAVE_TURDUS_MERULA],[test "x$have_turdusmerula" = "xyes"])
+
+AC_ARG_WITH([libhfsplus],
+            [AS_HELP_STRING([--with-libhfsplus],
+            [build with support for libhfsplus (default is no)])],
+            [have_libhfsplus=$withval],
+            [have_libhfsplus=no])
+if test "x$have_libhfsplus" = "xyes"; then
+  AC_DEFINE(HAVE_LIBHFSPLUS, 1, [Define if libhfsplus support is available])
+fi
+AM_CONDITIONAL([HAVE_LIBHFSPLUS],[test "x$have_libhfsplus" = "xyes"])
 
 CFLAGS="$CACHED_CFLAGS"
 

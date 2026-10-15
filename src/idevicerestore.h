@@ -46,6 +46,12 @@ extern "C" {
 #define FLAG_ALLOW_RESTORE_MODE (1 << 10)
 #define FLAG_NO_RESTORE      (1 << 11)
 #define FLAG_IGNORE_ERRORS   (1 << 12)
+#ifdef HAVE_TURDUS_MERULA
+# define FLAG_DOWNGRADE       (1 << 13)
+# define FLAG_BOOT_PONGO      (1 << 14)
+# define FLAG_TETHERED        (1 << 15)
+# define FLAG_ALLOW_UNSUPPORTED (1 << 16)
+#endif
 
 #define RESTORE_VARIANT_ERASE_INSTALL      "Erase Install (IPSW)"
 #define RESTORE_VARIANT_UPGRADE_INSTALL    "Upgrade Install (IPSW)"
@@ -117,8 +123,14 @@ int ipsw_extract_filesystem(ipsw_archive_t ipsw, plist_t build_identity, char** 
 int extract_component(ipsw_archive_t ipsw, const char* path, unsigned char** component_data, unsigned int* component_size);
 int personalize_component(struct idevicerestore_client_t* client, const char *component, const unsigned char* component_data, unsigned int component_size, plist_t tss_response, unsigned char** personalized_component, unsigned int* personalized_component_size);
 int get_preboard_manifest(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* manifest);
-
 const char* get_component_name(const char* filename);
+
+#ifdef HAVE_TURDUS_MERULA
+extern int hexparse(uint8_t *buf, char *s, size_t len);
+int force_get_tss_response(struct idevicerestore_client_t* client, plist_t build_identity, plist_t* tss);
+int build_identity_get_component_digest(plist_t build_identity, const char* component, uint8_t** buffer, size_t *len);
+int check_firmware_components(struct idevicerestore_client_t* client, plist_t build_identity);
+#endif
 
 #ifdef __cplusplus
 }
