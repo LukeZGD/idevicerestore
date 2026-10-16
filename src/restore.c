@@ -5751,7 +5751,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	int rp_attempt;
 	for (rp_attempt = 0; rp_attempt < 2; rp_attempt++) {
 		if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
-			logger(LL_ERROR, "Could not create Reverse Proxy\n");
+			logger(LL_INFO, "Could not create Reverse Proxy\n");
 		} else {
 			if (client->flags & FLAG_DEBUG) {
 				reverse_proxy_client_set_log_callback(rproxy, rp_log_cb, NULL);
@@ -5762,7 +5762,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 				reverse_proxy_client_free(rproxy);
 				rproxy = NULL;
 				if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
-					logger(LL_ERROR, "Could not create Reverse Proxy\n");
+					logger(LL_INFO, "Could not create Reverse Proxy\n");
 				} else {
 					if (client->flags & FLAG_DEBUG) {
 						reverse_proxy_client_set_log_callback(rproxy, rp_log_cb, NULL);
