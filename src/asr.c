@@ -41,6 +41,8 @@
 #define ASR_VERSION 1
 #define ASR_STREAM_ID 1
 #define ASR_BUFFER_SIZE 65536
+#define ASR_RECEIVE_POLL_TIMEOUT 5000
+#define ASR_RECEIVE_TIMEOUT 120000
 #define ASR_FEC_SLICE_STRIDE 40
 #define ASR_PACKETS_PER_FEC 25
 #define ASR_PAYLOAD_PACKET_SIZE 1450
@@ -142,13 +144,42 @@ int asr_receive(asr_client_t asr, plist_t* data)
 		return -1;
 	}
 
-	device_error = idevice_connection_receive(asr->connection, buffer, ASR_BUFFER_SIZE, &size);
+	unsigned int waited = 0;
+	do {
+		if (global_quit_flag) {
+			logger(LL_ERROR, "Cancelled while waiting for ASR\n");
+			free(buffer);
+			return -1;
+		}
+		size = 0;
+		device_error = idevice_connection_receive_timeout(asr->connection, buffer, ASR_BUFFER_SIZE,
+			&size, ASR_RECEIVE_POLL_TIMEOUT);
+		if (device_error != IDEVICE_E_TIMEOUT || size != 0) {
+			break;
+		}
+		if (waited == 0) {
+			logger(LL_INFO, "Waiting for ASR response...\n");
+		}
+		waited += ASR_RECEIVE_POLL_TIMEOUT;
+	} while (waited < ASR_RECEIVE_TIMEOUT);
 	if (device_error != IDEVICE_E_SUCCESS) {
-		logger(LL_ERROR, "Unable to receive data from ASR\n");
+		logger(LL_ERROR, "Unable to receive data from ASR (error %d, received %u bytes)\n",
+			device_error, size);
 		free(buffer);
 		return -1;
 	}
-	plist_from_xml(buffer, size, &request);
+	if (size == 0) {
+		logger(LL_ERROR, "ASR closed the connection while waiting for a response\n");
+		free(buffer);
+		return -1;
+	}
+	plist_err_t parse_error = plist_from_xml(buffer, size, &request);
+	if (parse_error != PLIST_ERR_SUCCESS || plist_get_node_type(request) != PLIST_DICT) {
+		logger(LL_ERROR, "Invalid plist received from ASR\n");
+		plist_free(request);
+		free(buffer);
+		return -1;
+	}
 
 	*data = request;
 
@@ -177,15 +208,37 @@ int asr_send(asr_client_t asr, plist_t data)
 
 int asr_send_buffer(asr_client_t asr, const void* data, size_t size)
 {
-	uint32_t bytes = 0;
-	idevice_error_t device_error = IDEVICE_E_SUCCESS;
-
-	device_error = idevice_connection_send(asr->connection, data, size, &bytes);
-	if (device_error != IDEVICE_E_SUCCESS || bytes != size) {
-		logger(LL_ERROR, "Unable to send data to ASR. Sent %u of %zu bytes.\n", bytes, size);
-		return -1;
+	size_t sent = 0;
+	unsigned int retries = 0;
+	while (sent < size) {
+		if (global_quit_flag) {
+			logger(LL_ERROR, "Cancelled while sending data to ASR\n");
+			return -1;
+		}
+		uint32_t bytes = 0;
+		uint32_t request = size - sent > UINT32_MAX ? UINT32_MAX : (uint32_t)(size - sent);
+		idevice_error_t device_error = idevice_connection_send(asr->connection,
+			(const char*)data + sent, request, &bytes);
+		if (bytes > request) {
+			logger(LL_ERROR, "ASR transport reported more bytes than requested\n");
+			return -1;
+		}
+		sent += bytes;
+		if (bytes) {
+			retries = 0;
+		}
+		if (sent == size) {
+			return 0;
+		}
+		if (device_error != IDEVICE_E_SUCCESS || !bytes) {
+			if (++retries > 10 || device_error == IDEVICE_E_INVALID_ARG || device_error == IDEVICE_E_NO_DEVICE) {
+				logger(LL_ERROR, "Unable to send data to ASR, sent %zu of %zu bytes (error %d)\n",
+					sent, size, device_error);
+				return -1;
+			}
+			usleep(100000);
+		}
 	}
-
 	return 0;
 }
 
@@ -361,13 +414,19 @@ int asr_send_payload(asr_client_t asr, ipsw_file_handle_t file)
 	double progress = 0;
 
 	length = ipsw_file_size(file);
-	ipsw_file_seek(file, 0, SEEK_SET);
+	if (ipsw_file_seek(file, 0, SEEK_SET) < 0) {
+		logger(LL_ERROR, "Unable to seek to the start of the filesystem\n");
+		return -1;
+	}
 
 	data = (char*)malloc(ASR_PAYLOAD_CHUNK_SIZE + 20);
+	if (!data) {
+		logger(LL_ERROR, "Unable to allocate ASR payload buffer\n");
+		return -1;
+	}
 
 	i = length;
-	int retry = 10;
-	while(i > 0 && retry >= 0) {
+	while(i > 0) {
 		uint32_t size = ASR_PAYLOAD_CHUNK_SIZE;
 		uint32_t sendsize = 0;
 
@@ -377,8 +436,7 @@ int asr_send_payload(asr_client_t asr, ipsw_file_handle_t file)
 
 		if (ipsw_file_read(file, data, size) != (int64_t)size) {
 			logger(LL_ERROR, "Error reading filesystem\n");
-			retry--;
-			continue;
+			break;
 		}
 
 		sendsize = size;
@@ -387,9 +445,8 @@ int asr_send_payload(asr_client_t asr, ipsw_file_handle_t file)
 			sendsize += 20;
 		}
 		if (asr_send_buffer(asr, data, sendsize) < 0) {
-			logger(LL_ERROR, "Unable to send filesystem payload chunk, retrying...\n");
-			retry--;
-			continue;
+			logger(LL_ERROR, "Unable to send filesystem payload chunk\n");
+			break;
 		}
 
 		bytes += size;
