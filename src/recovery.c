@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <libirecovery.h>
 #include <libimobiledevice/restore.h>
 #include <libimobiledevice/libimobiledevice.h>
@@ -370,6 +371,30 @@ int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_ide
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
 
 	return 0;
+}
+
+int recovery_boot_ibec(struct idevicerestore_client_t* client, plist_t build_identity)
+{
+	mutex_lock(&client->device_event_mutex);
+	unsigned int generation = client->recovery_generation;
+	if (recovery_send_ibec(client, build_identity) < 0) {
+		mutex_unlock(&client->device_event_mutex);
+		return -1;
+	}
+	recovery_client_free(client);
+	time_t deadline = time(NULL) + 60;
+	/* Count reconnects rather than requiring observation of the transient
+	 * disconnected mode: both USB events can arrive before the waiter runs. */
+	while (client->recovery_generation == generation && !(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000);
+	}
+	int ready = client->recovery_generation != generation && client->mode == MODE_RECOVERY && !(client->flags & FLAG_QUIT);
+	mutex_unlock(&client->device_event_mutex);
+	if (!ready) {
+		logger(LL_ERROR, "iBEC did not reconnect in recovery mode\n");
+		return -1;
+	}
+	return recovery_client_new(client);
 }
 
 int recovery_send_applelogo(struct idevicerestore_client_t* client, plist_t build_identity)

@@ -35,6 +35,7 @@
 #include <zlib.h>
 #include <libgen.h>
 #include <signal.h>
+#include <time.h>
 
 #include <curl/curl.h>
 
@@ -280,16 +281,25 @@ static void idevice_event_cb(const idevice_event_t *event, void *userdata)
 		if (client->ignore_device_add_events) {
 			return;
 		}
-		if (normal_check_mode(client) == 0) {
-			mutex_lock(&client->device_event_mutex);
-			client->mode = MODE_NORMAL;
-			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) connected in normal mode\n", __func__, client->ecid, client->udid);
+		/* Probe restored on the main thread while booting the ramdisk. A slow
+		 * lockdownd query here must not block subsequent USB events. */
+		mutex_lock(&client->device_event_mutex);
+		if (client->waiting_for_restore) {
 			cond_signal(&client->device_event_cond);
 			mutex_unlock(&client->device_event_mutex);
-		} else if ((client->ecid || (client->device && client->device->chip_id == 0x8900)) && restore_check_mode(client) == 0) {
+			return;
+		}
+		mutex_unlock(&client->device_event_mutex);
+		if (client->ecid && restore_check_mode(client) == 0) {
 			mutex_lock(&client->device_event_mutex);
 			client->mode = MODE_RESTORE;
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) connected in restore mode\n", __func__, client->ecid, client->udid);
+			cond_signal(&client->device_event_cond);
+			mutex_unlock(&client->device_event_mutex);
+		} else if (normal_check_mode(client) == 0) {
+			mutex_lock(&client->device_event_mutex);
+			client->mode = MODE_NORMAL;
+			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) connected in normal mode\n", __func__, client->ecid, client->udid);
 			cond_signal(&client->device_event_cond);
 			mutex_unlock(&client->device_event_mutex);
 		}
@@ -297,14 +307,14 @@ static void idevice_event_cb(const idevice_event_t *event, void *userdata)
 			client->device = get_irecv_device(client);
 		}
 	} else if (event->event == IDEVICE_DEVICE_REMOVE) {
+		mutex_lock(&client->device_event_mutex);
 		if (client->udid && !strcmp(event->udid, client->udid)) {
-			mutex_lock(&client->device_event_mutex);
 			client->mode = MODE_UNKNOWN;
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) disconnected\n", __func__, client->ecid, client->udid);
 			client->ignore_device_add_events = 0;
 			cond_signal(&client->device_event_cond);
-			mutex_unlock(&client->device_event_mutex);
 		}
+		mutex_unlock(&client->device_event_mutex);
 	}
 }
 
@@ -332,6 +342,7 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 				case IRECV_K_RECOVERY_MODE_3:
 				case IRECV_K_RECOVERY_MODE_4:
 					client->mode = MODE_RECOVERY;
+					client->recovery_generation++;
 					break;
 				default:
 					client->mode = MODE_UNKNOWN;
@@ -1492,37 +1503,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			}
 		}
 
-		mutex_lock(&client->device_event_mutex);
-
-		/* now we load the iBEC */
-		if (recovery_send_ibec(client, build_identity) < 0) {
-			mutex_unlock(&client->device_event_mutex);
-			logger(LL_ERROR, "Unable to send iBEC\n");
+		if (recovery_boot_ibec(client, build_identity) < 0) {
+			logger(LL_ERROR, "Unable to boot iBEC\n");
 			return -2;
 		}
-		recovery_client_free(client);
-
-		logger(LL_DEBUG, "Waiting for device to disconnect...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 60000);
-		if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
-			mutex_unlock(&client->device_event_mutex);
-
-			if (!(client->flags & FLAG_QUIT)) {
-				logger(LL_ERROR, "Device did not disconnect. Possibly invalid iBEC. Reset device and try again.\n");
-			}
-			return -2;
-		}
-		recovery_client_free(client);
-		logger(LL_DEBUG, "Waiting for device to reconnect in recovery mode...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 60000);
-		if (client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
-			mutex_unlock(&client->device_event_mutex);
-			if (!(client->flags & FLAG_QUIT)) {
-				logger(LL_ERROR, "Device did not reconnect in recovery mode. Possibly invalid iBEC. Reset device and try again.\n");
-			}
-			return -2;
-		}
-		mutex_unlock(&client->device_event_mutex);
 	}
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.5);
 	if (client->flags & FLAG_QUIT) {
@@ -1572,7 +1556,13 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	// now finally do the magic to put the device into restore mode
 	if (client->mode == MODE_RECOVERY) {
+		mutex_lock(&client->device_event_mutex);
+		client->waiting_for_restore = 1;
+		mutex_unlock(&client->device_event_mutex);
 		if (recovery_enter_restore(client, build_identity) < 0) {
+			mutex_lock(&client->device_event_mutex);
+			client->waiting_for_restore = 0;
+			mutex_unlock(&client->device_event_mutex);
 			logger(LL_ERROR, "Unable to place device into restore mode\n");
 			if (client->tss)
 				plist_free(client->tss);
@@ -1586,14 +1576,25 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		sleep(3);
 		mutex_lock(&client->device_event_mutex);
 		logger(LL_INFO, "Waiting for device to enter restore mode...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 300000);
+		time_t deadline = time(NULL) + 300;
+		while (client->mode != MODE_RESTORE && !(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+			mutex_unlock(&client->device_event_mutex);
+			int found = restore_check_mode(client) == 0;
+			mutex_lock(&client->device_event_mutex);
+			if (found) {
+				client->mode = MODE_RESTORE;
+				break;
+			}
+			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000);
+		}
+		client->waiting_for_restore = 0;
 		if (client->mode != MODE_RESTORE || (client->flags & FLAG_QUIT)) {
 			mutex_unlock(&client->device_event_mutex);
 			logger(LL_ERROR, "Device failed to enter restore mode.\n");
 			if (client->mode == MODE_UNKNOWN) {
 				logger(LL_ERROR, "Make sure that usbmuxd is running.\n");
 			} else if (client->mode == MODE_RECOVERY || client->mode == MODE_DFU) {
-				logger(LL_ERROR, "Device reconnected in %s mode, most likely image personalization failed.\n", client->mode->string);
+				logger(LL_ERROR, "Device reconnected in %s mode.\n", client->mode->string);
 			}
 			return -1;
 		}

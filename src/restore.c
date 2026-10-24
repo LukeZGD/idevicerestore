@@ -164,11 +164,12 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 {
 	int num_devices = 0;
 	char **devices = NULL;
+	*device = NULL;
 	idevice_get_device_list(&devices, &num_devices);
 	if (num_devices == 0) {
+		idevice_device_list_free(devices);
 		return -1;
 	}
-	*device = NULL;
 	idevice_t dev = NULL;
 	idevice_error_t device_error;
 	restored_client_t restore = NULL;
@@ -196,9 +197,11 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 		char* type = NULL;
 		uint64_t version = 0;
 		if (restored_query_type(restore, &type, &version) != RESTORE_E_SUCCESS) {
+			logger(LL_DEBUG, "%s: restored QueryType failed for %s\n", __func__, devices[j]);
+			free(type);
 			continue;
 		}
-		if (strcmp(type, "com.apple.mobile.restored") != 0) {
+		if (!type || strcmp(type, "com.apple.mobile.restored") != 0) {
 			free(type);
 			continue;
 		}
@@ -212,12 +215,15 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 			uint64_t this_ecid = (uint64_t)-1;
 
 			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
-				if (client->version && (client->version[0] == '1' || client->version[0] == '2')) {
-					/*
-					 *	This info isn't available pre-iOS 3, so whatever
-					 *	Just don't restore multiple pre-iOS 3 devices at once ;)
-					 */
-					goto found_device;
+				logger(LL_DEBUG, "%s: restored HardwareInfo query failed for %s\n", __func__, devices[j]);
+				plist_free(hwinfo);
+				continue;
+			}
+
+			node = plist_dict_get_item(hwinfo, "UniqueChipID");
+			if (!node || plist_get_node_type(node) != PLIST_UINT) {
+				if (hwinfo) {
+					plist_free(hwinfo);
 				}
 				continue;
 			}
@@ -257,13 +263,27 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 			restored_client_free(restore);
 			restore = NULL;
 		}
-		client->udid = strdup(devices[j]);
+		char* udid = strdup(devices[j]);
+		if (!udid) {
+			logger(LL_ERROR, "Unable to allocate restore device UDID\n");
+			break;
+		}
+		mutex_lock(&client->device_event_mutex);
+		free(client->udid);
+		client->udid = udid;
+		mutex_unlock(&client->device_event_mutex);
 		*device = dev;
 		break;
 	}
+	if (restore) {
+		restored_client_free(restore);
+	}
+	if (!*device && dev) {
+		idevice_free(dev);
+	}
 	idevice_device_list_free(devices);
 
-	return 0;
+	return *device ? 0 : -1;
 }
 
 int restore_check_mode(struct idevicerestore_client_t* client)
@@ -5992,6 +6012,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		if (err < 0) {
 			logger(LL_ERROR, "Unable to successfully restore device\n");
 			client->flags |= FLAG_QUIT;
+			break;
 		}
 
 		if (message) {plist_free(message);message = NULL;}

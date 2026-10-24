@@ -86,6 +86,8 @@ struct idevicerestore_client_t {
 	int flags;
 	int debug_level;
 	plist_t tss;
+	int waiting_for_restore;
+	unsigned int recovery_generation;
 	plist_t tss_localpolicy;
 	plist_t tss_recoveryos_root_ticket;
 	char* tss_url;
