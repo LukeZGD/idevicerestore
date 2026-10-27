@@ -211,6 +211,7 @@ char* realpath(const char *filename, char *resolved_name);
 void get_user_input(char *buf, int maxlen, int secure);
 
 const char* path_get_basename(const char* path);
+int is_legacy_ios(const char *version);
 
 #ifdef __cplusplus
 }

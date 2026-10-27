@@ -309,6 +309,7 @@ ipsw_archive_t ipsw_open(const char* ipsw)
 	struct stat fst;
 	if (stat(ipsw, &fst) != 0) {
 		logger(LL_ERROR, "ipsw_open %s: %s\n", ipsw, strerror(errno));
+		free(archive);
 		return NULL;
 	}
 	if (S_ISDIR(fst.st_mode)) {
@@ -320,9 +321,14 @@ ipsw_archive_t ipsw_open(const char* ipsw)
 			free(archive);
 			return NULL;
 		}
+		zip_discard(zip);
 		archive->zip = 1;
 	}
 	archive->path = strdup(ipsw);
+	if (!archive->path) {
+		free(archive);
+		return NULL;
+	}
 	return (ipsw_archive_t)archive;
 }
 
@@ -921,9 +927,9 @@ int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int
 	/* older devices don't require personalized firmwares and use a BuildManifesto.plist */
 	if (ipsw_file_exists(ipsw, "BuildManifesto.plist")) {
 		if (ipsw_extract_to_memory(ipsw, "BuildManifesto.plist", &data, &size) == 0) {
-			plist_from_memory((char*)data, size, buildmanifest, NULL);
+			plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
 			free(data);
-			return 0;
+			return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
 		}
 	}
 
@@ -933,9 +939,9 @@ int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int
 	/* whereas newer devices do not require personalized firmwares and use a BuildManifest.plist */
 	if (ipsw_extract_to_memory(ipsw, "BuildManifest.plist", &data, &size) == 0) {
 		*tss_enabled = 1;
-		plist_from_memory((char*)data, size, buildmanifest, NULL);
+		plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
 		free(data);
-		return 0;
+		return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
 	}
 
 	return -1;
@@ -947,9 +953,9 @@ int ipsw_extract_restore_plist(ipsw_archive_t ipsw, plist_t* restore_plist)
 	void* data = NULL;
 
 	if (ipsw_extract_to_memory(ipsw, "Restore.plist", &data, &size) == 0) {
-		plist_from_memory((char*)data, size, restore_plist, NULL);
+		plist_err_t err = plist_from_memory((char*)data, size, restore_plist, NULL);
 		free(data);
-		return 0;
+		return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*restore_plist) ? 0 : -1;
 	}
 
 	return -1;

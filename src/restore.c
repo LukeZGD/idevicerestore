@@ -160,6 +160,62 @@ void restore_client_free(struct idevicerestore_client_t* client)
 	}
 }
 
+static int restore_has_legacy_identity(struct idevicerestore_client_t *client)
+{
+	return client->device && is_legacy_ios(client->version) &&
+		(client->device->chip_id == 0x8900 || client->device->chip_id == 0x8720);
+}
+
+static int restore_hardware_matches(struct idevicerestore_client_t *client, plist_t hwinfo, int unique_device)
+{
+	if (hwinfo && !PLIST_IS_DICT(hwinfo)) {
+		return 0;
+	}
+	plist_t node;
+	if (client->device) {
+		const char *keys[] = { "ChipID", "BoardID" };
+		uint64_t expected[] = { client->device->chip_id, client->device->board_id };
+		for (size_t i = 0; i < 2; i++) {
+			node = plist_dict_get_item(hwinfo, keys[i]);
+			if (node) {
+				uint64_t value = 0;
+				if (!PLIST_IS_UINT(node)) {
+					return 0;
+				}
+				plist_get_uint_val(node, &value);
+				if (value != expected[i]) {
+					return 0;
+				}
+			}
+		}
+	}
+	node = plist_dict_get_item(hwinfo, "UniqueChipID");
+	if (PLIST_IS_UINT(node)) {
+		uint64_t ecid = 0;
+		plist_get_uint_val(node, &ecid);
+		if (ecid) {
+			return client->ecid && ecid == client->ecid;
+		}
+	} else if (node) {
+		return 0;
+	}
+	if (!restore_has_legacy_identity(client) || !unique_device) {
+		return 0;
+	}
+	logger(LL_NOTICE, "Legacy restored omitted ECID; using the only connected USB device\n");
+	return 1;
+}
+
+static int restore_device_is_unique(const char *udid)
+{
+	char **devices = NULL;
+	int count = 0;
+	int result = idevice_get_device_list(&devices, &count) == IDEVICE_E_SUCCESS &&
+		count == 1 && udid && devices && devices[0] && !strcmp(devices[0], udid);
+	idevice_device_list_free(devices);
+	return result;
+}
+
 static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t* device)
 {
 	int num_devices = 0;
@@ -207,55 +263,16 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 		}
 		free(type);
 
-		if (client->ecid != 0) {
-			plist_t node = NULL;
+		if (client->ecid != 0 || restore_has_legacy_identity(client)) {
 			plist_t hwinfo = NULL;
-			uint64_t this_cpid = (uint64_t)-1;
-			uint64_t this_bdid = (uint64_t)-1;
-			uint64_t this_ecid = (uint64_t)-1;
-
 			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
-				logger(LL_DEBUG, "%s: restored HardwareInfo query failed for %s\n", __func__, devices[j]);
 				plist_free(hwinfo);
+				hwinfo = NULL;
+			}
+			int matches = restore_hardware_matches(client, hwinfo, num_devices == 1);
+			plist_free(hwinfo);
+			if (!matches) {
 				continue;
-			}
-
-			node = plist_dict_get_item(hwinfo, "UniqueChipID");
-			if (!node || plist_get_node_type(node) != PLIST_UINT) {
-				if (hwinfo) {
-					plist_free(hwinfo);
-				}
-				continue;
-			}
-
-			node = plist_dict_get_item(hwinfo, "ChipID");
-			if (node && plist_get_node_type(node) == PLIST_UINT) {
-				plist_get_uint_val(node, &this_cpid);
-			}
-
-			node = plist_dict_get_item(hwinfo, "BoardID");
-			if (node && plist_get_node_type(node) == PLIST_UINT) {
-				plist_get_uint_val(node, &this_bdid);
-			}
-
-			node = plist_dict_get_item(hwinfo, "UniqueChipID");
-			if (node && plist_get_node_type(node) == PLIST_UINT) {
-				plist_get_uint_val(node, &this_ecid);
-			}
-
-			if (hwinfo) {
-				plist_free(hwinfo);
-			}
-
-			if (this_ecid != client->ecid) {
-				if (!client->version || (client->version[0] != '1' && client->version[0] != '2')) continue;
-				/*
-				 *	UniqueChipID isn't available pre-iOS 3, so whatever
-				 *	Just don't restore multiple pre-iOS 3 devices at once ;)
-				 *	On iOS 2.1 0x8720 we do get CPID and BDID, so let's at least verify that
-				 */
-				if (this_cpid != -1 && this_cpid != client->device->chip_id) continue;
-				if (this_bdid != -1 && this_bdid != client->device->board_id) continue;
 			}
 		}
 	found_device:
@@ -421,17 +438,9 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 	if (!client) {
 		return 0;
 	}
-	if (!client->ecid) {
-		if (client->device && client->device->chip_id == 0x8900) {
-			/*
-			 *	iOS 1 restored doesn't tell us the device ECID, nor do we actually know it
-			 */
-			logger(LL_DEBUG, "%s: Skipping ECID check for 0x8900 device %s\n", __func__, udid);
-			return 1;
-		} else {
-			logger(LL_ERROR, "%s: no ECID given in client data\n", __func__);
-			return 0;
-		}
+	if (!client->ecid && !restore_has_legacy_identity(client)) {
+		logger(LL_ERROR, "%s: no ECID given in client data\n", __func__);
+		return 0;
 	}
 
 	idevice_t device = NULL;
@@ -458,68 +467,24 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		logger(LL_DEBUG, "%s: Connected to %s, version %d\n", __func__, type, (int)version);
 	} else {
 		logger(LL_DEBUG, "%s: device %s is not in restore mode\n", __func__, udid);
+		free(type);
 		restored_client_free(restored);
 		idevice_free(device);
 		return 0;
 	}
 
+	free(type);
 	plist_t hwinfo = NULL;
 	restore_error = restored_query_value(restored, "HardwareInfo", &hwinfo);
-	if ((restore_error != RESTORE_E_SUCCESS) || !hwinfo) {
-		logger(LL_ERROR, "%s: Unable to get HardwareInfo from restored\n", __func__);
-		restored_client_free(restored);
-		idevice_free(device);
+	if (restore_error != RESTORE_E_SUCCESS) {
 		plist_free(hwinfo);
-		if (client->version && (client->version[0] == '1' || client->version[0] == '2')){
-			/*
-			 *	This info isn't available pre-iOS 3, so whatever
-			 *	Just don't restore multiple pre-iOS 3 devices at once ;)
-			 */
-			logger(LL_DEBUG, "%s: pre-iOS 3 restore detected, continuing restore without ecid check!", __func__);
-			return 1;
-		}
-		return 0;
+		hwinfo = NULL;
 	}
+	int matches = restore_hardware_matches(client, hwinfo, restore_device_is_unique(udid));
+	plist_free(hwinfo);
 	restored_client_free(restored);
 	idevice_free(device);
-
-	uint64_t this_cpid = (uint64_t)-1;
-	uint64_t this_bdid = (uint64_t)-1;
-	uint64_t this_ecid = (uint64_t)-1;
-	plist_t node = NULL;
-
-	node = plist_dict_get_item(hwinfo, "ChipID");
-	if (node && plist_get_node_type(node) == PLIST_UINT) {
-		plist_get_uint_val(node, &this_cpid);
-	}
-
-	node = plist_dict_get_item(hwinfo, "BoardID");
-	if (node && plist_get_node_type(node) == PLIST_UINT) {
-		plist_get_uint_val(node, &this_bdid);
-	}
-
-	node = plist_dict_get_item(hwinfo, "UniqueChipID");
-	if (node && plist_get_node_type(node) == PLIST_UINT) {
-		plist_get_uint_val(node, &this_ecid);
-	}
-
-	plist_free(hwinfo); hwinfo = NULL;
-
-	if (this_ecid == -1) {
-		logger(LL_ERROR, "%s: Unable to get ECID from restored\n", __func__);
-		if (!client->version || (client->version[0] != '1' && client->version[0] != '2')) return 0;
-		/*
-		 *	UniqueChipID isn't available pre-iOS 3, so whatever
-		 *	Just don't restore multiple pre-iOS 3 devices at once ;)
-		 *	On iOS 2.1 0x8720 we do get CPID and BDID, so let's at least verify that
-		 */
-		if (this_cpid != -1 && this_cpid != client->device->chip_id)  return 0;
-		if (this_bdid != -1 && this_bdid != client->device->board_id)  return 0;
-		logger(LL_DEBUG, "%s: pre-iOS 3 restore detected, continuing restore without ecid check!", __func__);
-		return 1;
-	}
-
-	return (this_ecid == client->ecid);
+	return matches;
 }
 
 int restore_open_with_timeout(struct idevicerestore_client_t* client)
@@ -536,7 +501,7 @@ int restore_open_with_timeout(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
-	if (client->ecid == 0 && (!client->device || client->device->chip_id != 0x8900)) {
+	if (client->ecid == 0 && !restore_has_legacy_identity(client)) {
 		logger(LL_ERROR, "no ECID in client data!\n");
 		return -1;
 	}
@@ -1130,7 +1095,10 @@ int restore_send_filesystem(struct idevicerestore_client_t* client, plist_t mess
 	if (!file) {
 		logger(LL_ERROR, "Unable to open '%s' in ipsw\n", fsname);
 		free(fsname);
+		ipsw_close(ipsw_dummy);
+		return -1;
 	}
+	free(fsname);
 
 	uint16_t asr_port = (uint16_t)plist_dict_get_uint(message, "DataPort");
 	if (asr_port == 0) {
@@ -1769,6 +1737,9 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	component_data = NULL;
 
 	dict = plist_new_dict();
+	if (client->restore->protocol_version == 7) {
+		plist_dict_set_item(dict, "Operation", plist_new_string("UpdateNOR"));
+	}
 	plist_dict_set_item(dict, "LlbImageData", plist_new_data((char*)llb_data, llb_size));
 	free(llb_data);
 	llb_data = NULL;
@@ -5674,6 +5645,201 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t* client, p
 #undef GET_NUM
 }
 
+/* Protocol 7 operation order from tihmstar/idevicerestore c25aefd. */
+struct restore_v7_state {
+	uint64_t stage;
+	int filesystem_sent;
+};
+
+static int restore_process_v7_protocol(struct idevicerestore_client_t *client, plist_t message, struct restore_v7_state *state)
+{
+	restored_client_t restore = client->restore->client;
+	plist_t response = plist_dict_get_item(message, "Response");
+	if (!PLIST_IS_STRING(response)) {
+		logger(LL_ERROR, "Legacy restore response is missing Response\n");
+		return -1;
+	}
+	if (!plist_string_val_compare(response, "Acknowledged")) {
+		if (state->stage == RESTORE_IMAGE) {
+			if (state->filesystem_sent || restore_send_filesystem(client, NULL) < 0) {
+				logger(LL_ERROR, "Unable to send legacy restore filesystem\n");
+				return -1;
+			}
+			state->filesystem_sent = 1;
+		}
+		logger(LL_INFO, "%s...\n", restore_progress_string((unsigned int)state->stage));
+		return 0;
+	}
+	plist_t status = plist_dict_get_item(message, "Status");
+	int64_t result = -1;
+	if (plist_string_val_compare(response, "Complete") || !PLIST_IS_UINT(status)) {
+		logger(LL_ERROR, "Invalid legacy restore completion response\n");
+		return -1;
+	}
+	plist_get_int_val(status, &result);
+	if (result != 0 || (state->stage == RESTORE_IMAGE && !state->filesystem_sent)) {
+		logger(LL_ERROR, "Legacy restore failed at stage %" PRIu64 " (status %" PRIi64 ")\n", state->stage, result);
+		return -1;
+	}
+	int err = 0;
+	uint64_t next_stage = state->stage;
+#define MAKE_STAGE(stage, num) ((uint64_t)(stage) | ((uint64_t)(num) << 32))
+	plist_t dict = plist_new_dict();
+	switch (state->stage) {
+	case MAKE_STAGE(WAIT_FOR_NAND, 0):
+		next_stage = MAKE_STAGE(CREATE_PARTITION_MAP, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Partition"));
+		break;
+
+	case MAKE_STAGE(CREATE_PARTITION_MAP, 0):
+		next_stage = MAKE_STAGE(CREATE_FILESYSTEM, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Erase"));
+		plist_dict_set_item(dict, "VolumeName", plist_new_string("System"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		break;
+
+	case MAKE_STAGE(CREATE_FILESYSTEM, 0):
+		next_stage = MAKE_STAGE(CREATE_FILESYSTEM, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Erase"));
+		plist_dict_set_item(dict, "VolumeName", plist_new_string("Data"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s2"));
+		break;
+
+	case MAKE_STAGE(CREATE_FILESYSTEM, 1):
+		next_stage = MAKE_STAGE(RESTORE_IMAGE, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Restore"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		break;
+
+	case MAKE_STAGE(RESTORE_IMAGE, 0):
+		next_stage = MAKE_STAGE(CHECK_FILESYSTEMS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("FilesystemCheck"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		break;
+
+	case MAKE_STAGE(CHECK_FILESYSTEMS, 0):
+		next_stage = MAKE_STAGE(MOUNT_FILESYSTEMS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Mount"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt1"));
+		break;
+
+	case MAKE_STAGE(MOUNT_FILESYSTEMS, 0):
+		next_stage = MAKE_STAGE(CHECK_FILESYSTEMS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("FilesystemCheck"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s2"));
+		break;
+
+	case MAKE_STAGE(CHECK_FILESYSTEMS, 1):
+		next_stage = MAKE_STAGE(MOUNT_FILESYSTEMS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Mount"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s2"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt2"));
+		break;
+
+	case MAKE_STAGE(MOUNT_FILESYSTEMS, 1):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Ditto"));
+		plist_dict_set_item(dict, "SourcePath", plist_new_string("/mnt1/private/var"));
+		plist_dict_set_item(dict, "DestinationPath", plist_new_string("/mnt2"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 0):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("MakeDirectory"));
+		plist_dict_set_item(dict, "Mode", plist_new_string("750"));
+		plist_dict_set_item(dict, "Path", plist_new_string("/mnt2/root/Media"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 1):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 2);
+		plist_dict_set_item(dict, "Operation", plist_new_string("RemovePath"));
+		plist_dict_set_item(dict, "Path", plist_new_string("/mnt1/private/var"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 2):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 3);
+		plist_dict_set_item(dict, "Operation", plist_new_string("MakeDirectory"));
+		plist_dict_set_item(dict, "Mode", plist_new_string("755"));
+		plist_dict_set_item(dict, "Path", plist_new_string("/mnt1/private/var"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 3):
+		next_stage = MAKE_STAGE(UNMOUNT_FILESYSTEMS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Unmount"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt1"));
+		break;
+
+	case MAKE_STAGE(UNMOUNT_FILESYSTEMS, 0):
+		next_stage = MAKE_STAGE(UNMOUNT_FILESYSTEMS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Unmount"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt2"));
+		break;
+
+	case MAKE_STAGE(UNMOUNT_FILESYSTEMS, 1):
+		next_stage = MAKE_STAGE(FLASH_FIRMWARE, 0);
+		if (client->flags & FLAG_EXCLUDE) {
+			next_stage = MAKE_STAGE(SET_BOOT_STAGE, 0);
+			plist_dict_set_item(dict, "Operation", plist_new_string("SetBootStage"));
+		} else {
+			err = restore_send_nor(client, NULL);
+		}
+		break;
+
+	case MAKE_STAGE(FLASH_FIRMWARE, 0):
+		if ((client->flags & FLAG_EXCLUDE) || strncmp(client->device->product_type, "iPhone", 6)) {
+			next_stage = MAKE_STAGE(SET_BOOT_STAGE, 0);
+			plist_dict_set_item(dict, "Operation", plist_new_string("SetBootStage"));
+			break;
+		}
+		next_stage = MAKE_STAGE(UPDATE_BASEBAND, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("UpdateBaseBand"));
+		plist_dict_set_item(dict, "UpdateBasebandBootloader", plist_new_bool(1));
+		break;
+
+	case MAKE_STAGE(UPDATE_BASEBAND, 0):
+		next_stage = MAKE_STAGE(SET_BOOT_STAGE, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("SetBootStage"));
+		break;
+
+	case MAKE_STAGE(SET_BOOT_STAGE, 0):
+		next_stage = MAKE_STAGE(MODIFY_BOOTARGS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("SetNVRam"));
+		plist_dict_set_item(dict, "NVRAMKey", plist_new_string("auto-boot"));
+		plist_dict_set_item(dict, "NVRAMValue", plist_new_string("true"));
+		break;
+
+	case MAKE_STAGE(MODIFY_BOOTARGS, 0):
+		next_stage = MAKE_STAGE(MODIFY_BOOTARGS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("SetNVRam"));
+		plist_dict_set_item(dict, "NVRAMKey", plist_new_string("bootdelay"));
+		plist_dict_set_item(dict, "NVRAMValue", plist_new_string("0"));
+		break;
+
+	case MAKE_STAGE(MODIFY_BOOTARGS, 1):
+		logger(LL_INFO, "Done restoring\n");
+		restore_finished = 1;
+		client->flags |= FLAG_QUIT;
+		break;
+
+	default:
+		logger(LL_ERROR, "Unexpected legacy restore stage %" PRIu64 "\n", state->stage);
+		err = -7;
+		break;
+	}
+	if (err == 0 && plist_dict_get_item(dict, "Operation")) {
+		err = restored_send(restore, dict);
+	}
+	plist_free(dict);
+	if (err != 0) {
+		logger(LL_ERROR, "Unable to send legacy restore operation (%d)\n", err);
+		return -1;
+	}
+	state->stage = next_stage;
+	return 0;
+#undef MAKE_STAGE
+}
+
 int restore_device(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	int err = 0;
@@ -5690,6 +5856,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	uint64_t v7_restore_stage = WAIT_FOR_NAND;
 
 	restore_finished = 0;
+	struct restore_v7_state v7_state = { WAIT_FOR_NAND, 0 };
 
 	// open our connection to the device and verify we're in restore mode
 	err = restore_open_with_timeout(client);
@@ -5698,6 +5865,13 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		return (err == -2) ? -1: -2;
 	}
 	logger(LL_INFO, "Device %s has successfully entered restore mode\n", client->udid);
+
+	if (client->restore->protocol_version == 7 &&
+		(!restore_has_legacy_identity(client) || !(client->flags & FLAG_ERASE))) {
+		logger(LL_ERROR, "Protocol 7 requires an iOS 1/2 device and an erase restore\n");
+		restore_client_free(client);
+		return -1;
+	}
 
 	client->restore->build_identity = build_identity;
 	restore = client->restore->client;
@@ -5770,10 +5944,12 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	}
 
 #ifdef HAVE_REVERSE_PROXY
-	logger(LL_INFO, "Starting Reverse Proxy\n");
+	if (!is_legacy_ios(client->version)) {
+		logger(LL_INFO, "Starting Reverse Proxy\n");
+	}
 	reverse_proxy_client_t rproxy = NULL;
 	int rp_attempt;
-	for (rp_attempt = 0; rp_attempt < 2; rp_attempt++) {
+	for (rp_attempt = 0; !is_legacy_ios(client->version) && rp_attempt < 2; rp_attempt++) {
 		if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
 			logger(LL_INFO, "Could not create Reverse Proxy\n");
 		} else {
@@ -5810,13 +5986,15 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	}
 #else
 	fdr_client_t fdr_control_channel = NULL;
-	logger(LL_INFO, "Starting FDR listener thread\n");
-	if (!fdr_connect(device, FDR_CTRL, &fdr_control_channel)) {
+	if (!is_legacy_ios(client->version)) {
+		logger(LL_INFO, "Starting FDR listener thread\n");
+	}
+	if (!is_legacy_ios(client->version) && !fdr_connect(device, FDR_CTRL, &fdr_control_channel)) {
 		if(thread_new(&fdr_thread, fdr_listener_thread, fdr_control_channel)) {
 			logger(LL_ERROR, "Failed to start FDR listener thread\n");
 			fdr_thread = THREAD_T_NULL; /* undefined after failure */
 		}
-	} else {
+	} else if (!is_legacy_ios(client->version)) {
 		logger(LL_ERROR, "Failed to start FDR Ctrl channel\n");
 		// FIXME: We might want to return failure here as it will likely fail
 	}
@@ -6003,7 +6181,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	// this is the restore process loop, it reads each message in from
 	// restored and passes that data on to it's specific handler
 	while (!(client->flags & FLAG_QUIT)) {
-		if (err != 0 && client->flags & FLAG_IGNORE_ERRORS) {
+		if (err != 0 && (client->flags & FLAG_IGNORE_ERRORS)) {
 			logger(LL_WARNING, "Attempting to continue after critical error, restore might fail...\n");
 			err = 0;
 		}
@@ -6034,8 +6212,25 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 #endif
 
 		if (client->restore->protocol_version == 7) {
-			//iOS 1.0X restores
-			err = restore_process_v7_protocol(client, message, &v7_restore_stage);
+			err = restore_process_v7_protocol(client, message, &v7_state);
+			plist_free(message);
+			message = NULL;
+			if (err < 0) {
+				break;
+			}
+			continue;
+		}
+
+		// discover what kind of message has been received
+		node = plist_dict_get_item(message, "MsgType");
+		if (!node || plist_get_node_type(node) != PLIST_STRING) {
+			logger(LL_DEBUG, "Unknown message received:\n");
+			logger_dump_plist(LL_DEBUG, message, 1);
+			plist_free(message);
+			message = NULL;
+			continue;
+		}
+		plist_get_string_val(node, &type);
 
 		} else { //iOS 1.1 and everything newer
 
@@ -6199,6 +6394,10 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		}
 	}
 #endif
+
+	if (client->restore->protocol_version == 7 && !restore_finished && err == 0) {
+		err = -1;
+	}
 
 	restore_client_free(client);
 	return err;

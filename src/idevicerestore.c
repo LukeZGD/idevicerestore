@@ -290,7 +290,7 @@ static void idevice_event_cb(const idevice_event_t *event, void *userdata)
 			return;
 		}
 		mutex_unlock(&client->device_event_mutex);
-		if (client->ecid && restore_check_mode(client) == 0) {
+		if ((client->ecid || (client->device && client->device->chip_id == 0x8900)) && restore_check_mode(client) == 0) {
 			mutex_lock(&client->device_event_mutex);
 			client->mode = MODE_RESTORE;
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) connected in restore mode\n", __func__, client->ecid, client->udid);
@@ -329,9 +329,11 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 			mutex_lock(&client->device_event_mutex);
 			switch (event->mode) {
 				case IRECV_K_WTF_MODE:
+					client->dfu_generation++;
 					client->mode = MODE_WTF;
 					break;
 				case IRECV_K_DFU_MODE:
+					client->dfu_generation++;
 					client->mode = MODE_DFU;
 					break;
 				case IRECV_K_PORT_DFU_MODE:
@@ -372,6 +374,133 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 }
 
 int build_identity_check_components_in_ipsw(plist_t build_identity, ipsw_archive_t ipsw);
+
+/* Legacy manifest conversion adapted from tihmstar/idevicerestore. */
+static void restore_manifest_add_component(plist_t manifest, const char *name, const char *path)
+{
+	plist_t component = plist_new_dict();
+	plist_t info = plist_new_dict();
+	plist_dict_set_item(info, "Path", plist_new_string(path));
+	plist_dict_set_item(component, "Info", info);
+	plist_dict_set_item(manifest, name, component);
+}
+
+static plist_t build_identity_from_restore_plist(struct idevicerestore_client_t *client)
+{
+	char model[64];
+	const char *hardware_model = client->device->hardware_model;
+	if (!hardware_model) {
+		return NULL;
+	}
+	size_t model_length = strlen(hardware_model);
+	if (model_length >= sizeof(model)) {
+		return NULL;
+	}
+	for (size_t i = 0; i <= model_length; i++) {
+		model[i] = tolower((unsigned char)hardware_model[i]);
+	}
+	char flash_path[128];
+	char path[PATH_MAX];
+	snprintf(flash_path, sizeof(flash_path), "Firmware/all_flash/all_flash.%s.production", model);
+	snprintf(path, sizeof(path), "%s/manifest", flash_path);
+	void *data = NULL;
+	size_t size = 0;
+	if (ipsw_extract_to_memory(client->ipsw, path, &data, &size) < 0 || !data || !size) {
+		free(data);
+		return NULL;
+	}
+	plist_t identity = plist_new_dict();
+	plist_t manifest = plist_new_dict();
+	plist_dict_set_item(identity, "Manifest", manifest);
+	char *cursor = data;
+	char *filename;
+	while ((filename = strsep(&cursor, "\r\n"))) {
+		if (!*filename) {
+			continue;
+		}
+		if (strchr(filename, '/') || strchr(filename, '\\') || strstr(filename, "..") ||
+			snprintf(path, sizeof(path), "%s/%s", flash_path, filename) >= sizeof(path)) {
+			free(data);
+			plist_free(identity);
+			return NULL;
+		}
+		const char *name = get_component_name(filename);
+		if (!name) {
+			continue;
+		}
+		if (!ipsw_file_exists(client->ipsw, path)) {
+			logger(LL_ERROR, "Missing firmware component %s\n", path);
+			free(data);
+			plist_free(identity);
+			return NULL;
+		}
+		restore_manifest_add_component(manifest, name, path);
+		if (!strcmp(name, "DeviceTree")) {
+			restore_manifest_add_component(manifest, "RestoreDeviceTree", path);
+		} else if (!strcmp(name, "AppleLogo")) {
+			restore_manifest_add_component(manifest, "RestoreLogo", path);
+		}
+	}
+	free(data);
+	const char *dfu_components[] = { "iBSS", "iBEC" };
+	for (size_t i = 0; i < 2; i++) {
+		snprintf(path, sizeof(path), "Firmware/dfu/%s.%s.RELEASE.dfu", dfu_components[i], model);
+		if (ipsw_file_exists(client->ipsw, path)) {
+			restore_manifest_add_component(manifest, dfu_components[i], path);
+		}
+	}
+	if (!plist_dict_get_item(manifest, "RestoreLogo")) {
+		const char *logos[] = { "applelogo.img2", "applelogo.s5l8900x.img3" };
+		for (size_t i = 0; i < 2; i++) {
+			snprintf(path, sizeof(path), "%s/%s", flash_path, logos[i]);
+			if (ipsw_file_exists(client->ipsw, path)) {
+				restore_manifest_add_component(manifest, "RestoreLogo", path);
+				break;
+			}
+		}
+	}
+	plist_t kernels = plist_dict_get_item(client->build_manifest, "KernelCachesByTarget");
+	plist_t kernel;
+	if (PLIST_IS_DICT(kernels)) {
+		char target[4];
+		snprintf(target, sizeof(target), "%.3s", model);
+		kernel = plist_access_path(kernels, 2, target, "Release");
+	} else {
+		kernel = plist_access_path(client->build_manifest, 2, "RestoreKernelCaches", "Release");
+	}
+	plist_t ramdisks = plist_dict_get_item(client->build_manifest, "RestoreRamDisks");
+	plist_t ramdisk = plist_dict_get_item(ramdisks, client->flags & FLAG_ERASE ? "User" : "Update");
+	if (!ramdisk && !(client->flags & FLAG_ERASE)) {
+		ramdisk = plist_dict_get_item(ramdisks, "User");
+		if (ramdisk) {
+			client->flags |= FLAG_ERASE;
+		}
+	}
+	plist_t os = plist_access_path(client->build_manifest, 2, "SystemRestoreImages", "User");
+	if (!PLIST_IS_STRING(kernel) || !PLIST_IS_STRING(ramdisk) || !PLIST_IS_STRING(os)) {
+		logger(LL_ERROR, "Restore.plist is missing a kernel, ramdisk, or filesystem path\n");
+		plist_free(identity);
+		return NULL;
+	}
+	restore_manifest_add_component(manifest, "KernelCache", plist_get_string_ptr(kernel, NULL));
+	restore_manifest_add_component(manifest, "RestoreKernelCache", plist_get_string_ptr(kernel, NULL));
+	restore_manifest_add_component(manifest, "RestoreRamDisk", plist_get_string_ptr(ramdisk, NULL));
+	restore_manifest_add_component(manifest, "OS", plist_get_string_ptr(os, NULL));
+	const char *required[] = { "OS", "RestoreRamDisk", "RestoreKernelCache", "RestoreDeviceTree", "LLB" };
+	for (size_t i = 0; i < sizeof(required)/sizeof(required[0]); i++) {
+		const char *component_path = plist_get_string_ptr(plist_access_path(manifest, 3, required[i], "Info", "Path"), NULL);
+		if (!component_path || !*component_path || !ipsw_file_exists(client->ipsw, component_path)) {
+			logger(LL_ERROR, "Missing required restore component %s\n", required[i]);
+			plist_free(identity);
+			return NULL;
+		}
+	}
+	plist_t info = plist_new_dict();
+	plist_dict_set_item(info, "RestoreBehavior", plist_new_string(client->flags & FLAG_ERASE ? "Erase" : "Update"));
+	plist_dict_set_item(info, "Variant", plist_new_string(client->flags & FLAG_ERASE ? "Customer " RESTORE_VARIANT_ERASE_INSTALL : "Customer " RESTORE_VARIANT_UPGRADE_INSTALL));
+	plist_dict_set_item(identity, "Info", info);
+	return identity;
+}
 
 int idevicerestore_start(struct idevicerestore_client_t* client)
 {
@@ -496,20 +625,32 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			}
 		}
 
+		if (!wtftmp || !wtfsize) {
+			free(wtftmp);
+			dfu_client_free(client);
+			return -1;
+		}
 		mutex_lock(&client->device_event_mutex);
-		if (wtftmp) {
-			if (dfu_send_buffer(client, wtftmp, wtfsize) != 0) {
-				logger(LL_ERROR, "Could not send WTF...\n");
-			}
+		unsigned int generation = client->dfu_generation;
+		if (dfu_send_buffer(client, wtftmp, wtfsize) != 0) {
+			mutex_unlock(&client->device_event_mutex);
+			free(wtftmp);
+			dfu_client_free(client);
+			logger(LL_ERROR, "Could not send WTF\n");
+			return -1;
 		}
 		dfu_client_free(client);
 
 		free(wtftmp);
 
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-		if (client->mode != MODE_DFU && client->mode != MODE_WTF) {
+		time_t deadline = time(NULL) + 10;
+		while (client->dfu_generation == generation && !(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000);
+		}
+		if (client->dfu_generation == generation ||
+			(client->mode != MODE_DFU && client->mode != MODE_WTF) || (client->flags & FLAG_QUIT)) {
 			mutex_unlock(&client->device_event_mutex);
-			logger(LL_ERROR, "Device did not reconnect in DFU/WTF mode.\n");
+			logger(LL_ERROR, "Device did not reconnect in DFU/WTF mode\n");
 			return -1;
 		}
 		mutex_unlock(&client->device_event_mutex);
@@ -521,7 +662,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		logger(LL_ERROR, "Unable to discover device type\n");
 		return -1;
 	}
-	if (client->ecid == 0 && client->mode != MODE_WTF) {
+	if (client->ecid == 0 && client->device->chip_id != 0x8900) {
 		logger(LL_ERROR, "Unable to determine ECID\n");
 		return -1;
 	}
@@ -690,17 +831,25 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 
 	// extract buildmanifest
-	int isRestorePlist = 0;
+	int is_restore_plist = 0;
 	if (client->flags & FLAG_CUSTOM) {
 		logger(LL_INFO, "Extracting Restore.plist from IPSW\n");
 		if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
 			logger(LL_ERROR, "Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
 			return -1;
 		}
-		isRestorePlist = 1;
+		is_restore_plist = 1;
 	} else {
 		logger(LL_INFO, "Extracting BuildManifest from IPSW\n");
-		if (ipsw_extract_build_manifest(client->ipsw, &client->build_manifest, &tss_enabled) < 0) {
+		if (!ipsw_file_exists(client->ipsw, "BuildManifest.plist") &&
+			!ipsw_file_exists(client->ipsw, "BuildManifesto.plist")) {
+			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0 ||
+				!is_legacy_ios(plist_get_string_ptr(plist_dict_get_item(client->build_manifest, "ProductVersion"), NULL))) {
+				logger(LL_ERROR, "Missing BuildManifest; Restore.plist fallback requires iOS 1.x or 2.x\n");
+				return -1;
+			}
+			is_restore_plist = 1;
+		} else if (ipsw_extract_build_manifest(client->ipsw, &client->build_manifest, &tss_enabled) < 0) {
 			logger(LL_ERROR, "Unable to extract BuildManifest from %s. Firmware file might be corrupt.\n", client->ipsw->path);
 			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
 				logger(LL_ERROR, "ERROR: Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
@@ -889,197 +1038,16 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	idevicerestore_progress(client, RESTORE_STEP_DETECT, 0.8);
 
-	// choose whether this is an upgrade or a restore (default to upgrade)
-	client->tss = NULL;
-	plist_t build_identity = NULL;
-	int build_identity_needs_free = 0;
-	if (isRestorePlist) {
-		build_identity = plist_new_dict();
-		build_identity_needs_free = 1;
-
-		if (client->mode == MODE_WTF) {
-			/*
-			 *	If we're still in WTF mode (i.e. when restoring iOS 1) we can't correctly identify the device yet.
-			 *	We'll just assume that this firmware is correct for the device and identify the device base on the firmware.
-			 *	Not ideal, but there is no other way to distinguish iPod1,1 from iPhone1,1 restoring iOS 1
-			 */
-			plist_t p_ProductType = plist_dict_get_item(client->build_manifest, "ProductType");
-			if (!p_ProductType){
-				logger(LL_ERROR, "ERROR: Unable to get ProductType from Restore.plist\n");
-			}else{
-				char *firmwareProductType = NULL;
-				plist_get_string_val(p_ProductType, &firmwareProductType);
-				if (!firmwareProductType){
-					logger(LL_ERROR, "ERROR: ProductType from Restore.plist is not of type PLIST_STRING\n");
-				}else{
-					irecv_error_t ierr = 0;
-					ierr = irecv_devices_get_device_by_product_type(firmwareProductType, &client->device);
-					if (ierr){
-						logger(LL_ERROR, "ERROR: Failed to identify device from ProductType\n");
-					}
-					free(firmwareProductType);
-				}
-			}
+	if (client->mode == MODE_WTF && is_restore_plist && client->device->chip_id == 0x8900) {
+		const char *product = plist_get_string_ptr(plist_dict_get_item(client->build_manifest, "ProductType"), NULL);
+		irecv_device_t device = NULL;
+		if (!product || irecv_devices_get_device_by_product_type(product, &device) != IRECV_E_SUCCESS ||
+			!device || device->chip_id != 0x8900) {
+			logger(LL_ERROR, "Unable to identify legacy WTF device from Restore.plist\n");
+			return -1;
 		}
-
-		{
-			plist_t node;
-			plist_t comp;
-			plist_t inf;
-			plist_t manifest;
-
-			char tmpstr[256];
-			char p_all_flash[128];
-			char lcmodel[8];
-			strcpy(lcmodel, client->device->hardware_model);
-			int x = 0;
-			while (lcmodel[x]) {
-				lcmodel[x] = tolower(lcmodel[x]);
-				x++;
-			}
-
-			snprintf(p_all_flash, sizeof(p_all_flash), "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
-			strcpy(tmpstr, p_all_flash);
-			strcat(tmpstr, "/manifest");
-
-			if (!ipsw_file_exists(client->ipsw, tmpstr) && strcmp(tmpstr, "Firmware/all_flash/all_flash.m68ap.production/manifest") == 0) {
-				logger(LL_INFO, "Cannot find m68ap manifest, trying n45ap\n");
-				sprintf(lcmodel, "n45ap");
-				sprintf(p_all_flash, "Firmware/all_flash/all_flash.%s.%s", lcmodel, "production");
-				strcpy(tmpstr, p_all_flash);
-				strcat(tmpstr, "/manifest");
-			}
-
-			// get all_flash file manifest
-			char *files[16];
-			void *fmanifest = NULL;
-			size_t msize = 0;
-			if (ipsw_extract_to_memory(client->ipsw, tmpstr, &fmanifest, &msize) < 0) {
-				logger(LL_ERROR, "could not extract %s from IPSW\n", tmpstr);
-				free(build_identity);
-				return -1;
-			}
-
-			char *tok = strtok(fmanifest, "\r\n");
-			int fc = 0;
-			while (tok) {
-				files[fc++] = strdup(tok);
-				if (fc >= 16) {
-					break;
-				}
-				tok = strtok(NULL, "\r\n");
-			}
-			free(fmanifest);
-
-			manifest = plist_new_dict();
-
-			for (x = 0; x < fc; x++) {
-				inf = plist_new_dict();
-				strcpy(tmpstr, p_all_flash);
-				strcat(tmpstr, "/");
-				strcat(tmpstr, files[x]);
-				plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
-				comp = plist_new_dict();
-				plist_dict_set_item(comp, "Info", inf);
-				const char* compname = get_component_name(files[x]);
-				if (compname) {
-					plist_dict_set_item(manifest, compname, comp);
-					if (!strncmp(files[x], "DeviceTree", 10)) {
-						plist_dict_set_item(manifest, "RestoreDeviceTree", plist_copy(comp));
-					}
-				} else {
-					logger(LL_WARNING, "Unhandled component %s\n", files[x]);
-					plist_free(comp);
-				}
-				free(files[x]);
-				files[x] = NULL;
-			}
-
-			// add iBSS
-			snprintf(tmpstr, sizeof(tmpstr), "Firmware/dfu/iBSS.%s.%s.dfu", lcmodel, "RELEASE");
-			inf = plist_new_dict();
-			plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
-			comp = plist_new_dict();
-			plist_dict_set_item(comp, "Info", inf);
-			plist_dict_set_item(manifest, "iBSS", comp);
-
-			// add iBEC
-			snprintf(tmpstr, sizeof(tmpstr), "Firmware/dfu/iBEC.%s.%s.dfu", lcmodel, "RELEASE");
-			inf = plist_new_dict();
-			plist_dict_set_item(inf, "Path", plist_new_string(tmpstr));
-			comp = plist_new_dict();
-			plist_dict_set_item(comp, "Info", inf);
-			plist_dict_set_item(manifest, "iBEC", comp);
-
-			// add kernel cache
-			plist_t kdict = NULL;
-
-			node = plist_dict_get_item(client->build_manifest, "KernelCachesByTarget");
-			if (node && (plist_get_node_type(node) == PLIST_DICT)) {
-				char tt[4];
-				strncpy(tt, lcmodel, 3);
-				tt[3] = 0;
-				kdict = plist_dict_get_item(node, tt);
-			} else {
-				// Populated in older iOS IPSWs
-				kdict = plist_dict_get_item(client->build_manifest, "RestoreKernelCaches");
-			}
-			if (kdict && (plist_get_node_type(kdict) == PLIST_DICT)) {
-				plist_t kc = plist_dict_get_item(kdict, "Release");
-				if (kc && (plist_get_node_type(kc) == PLIST_STRING)) {
-					inf = plist_new_dict();
-					plist_dict_set_item(inf, "Path", plist_copy(kc));
-					comp = plist_new_dict();
-					plist_dict_set_item(comp, "Info", inf);
-					plist_dict_set_item(manifest, "KernelCache", comp);
-					plist_dict_set_item(manifest, "RestoreKernelCache", plist_copy(comp));
-				}
-			}
-
-			// add ramdisk
-			node = plist_dict_get_item(client->build_manifest, "RestoreRamDisks");
-			if (node && (plist_get_node_type(node) == PLIST_DICT)) {
-				plist_t rd = plist_dict_get_item(node, (client->flags & FLAG_ERASE) ? "User" : "Update");
-				// if no "Update" ram disk entry is found try "User" ram disk instead
-				if (!rd && !(client->flags & FLAG_ERASE)) {
-					rd = plist_dict_get_item(node, "User");
-					// also, set the ERASE flag since we actually change the restore variant
-					client->flags |= FLAG_ERASE;
-				}
-				if (rd && (plist_get_node_type(rd) == PLIST_STRING)) {
-					inf = plist_new_dict();
-					plist_dict_set_item(inf, "Path", plist_copy(rd));
-					comp = plist_new_dict();
-					plist_dict_set_item(comp, "Info", inf);
-					plist_dict_set_item(manifest, "RestoreRamDisk", comp);
-				}
-			}
-
-			// add OS filesystem
-			node = plist_dict_get_item(client->build_manifest, "SystemRestoreImages");
-			if (!node) {
-				logger(LL_ERROR, "missing SystemRestoreImages in Restore.plist\n");
-			}
-			plist_t os = plist_dict_get_item(node, "User");
-			if (!os) {
-				logger(LL_ERROR, "missing filesystem in Restore.plist\n");
-			} else {
-				inf = plist_new_dict();
-				plist_dict_set_item(inf, "Path", plist_copy(os));
-				comp = plist_new_dict();
-				plist_dict_set_item(comp, "Info", inf);
-				plist_dict_set_item(manifest, "OS", comp);
-			}
-
-			// add info
-			inf = plist_new_dict();
-			plist_dict_set_item(inf, "RestoreBehavior", plist_new_string((client->flags & FLAG_ERASE) ? "Erase" : "Update"));
-			plist_dict_set_item(inf, "Variant", plist_new_string((client->flags & FLAG_ERASE) ? "Customer " RESTORE_VARIANT_ERASE_INSTALL : "Customer " RESTORE_VARIANT_UPGRADE_INSTALL));
-			plist_dict_set_item(build_identity, "Info", inf);
-
-			// finally add manifest
-			plist_dict_set_item(build_identity, "Manifest", manifest);
-		}
+		logger(LL_NOTICE, "WTF mode cannot distinguish iPhone1,1 from iPod1,1; using firmware ProductType %s\n", product);
+		client->device = device;
 	}
 
 	/* check if device type is supported by the given build manifest */
@@ -1090,6 +1058,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	/* print iOS information from the manifest */
 	build_manifest_get_version_information(client->build_manifest, client);
+	if (!client->version || !client->build) {
+		return -1;
+	}
 
 	logger(LL_INFO, "IPSW Product Version: %s\n", client->version);
 	logger(LL_INFO, "IPSW Product Build: %s Major: %d\n", client->build, client->build_major);
@@ -1097,16 +1068,21 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	client->image4supported = is_image4_supported(client);
 	logger(LL_INFO, "Device supports Image4: %s\n", (client->image4supported) ? "true" : "false");
 
-	if (!build_identity) {
-		if (client->restore_variant) {
-			build_identity = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, client->restore_variant, 1);
-		} else if (client->flags & FLAG_ERASE) {
-			build_identity = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, RESTORE_VARIANT_ERASE_INSTALL, 0);
-		} else {
-			build_identity = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, RESTORE_VARIANT_UPGRADE_INSTALL, 0);
-			if (!build_identity) {
-				build_identity = build_manifest_get_build_identity_for_model(client->build_manifest, client->device->hardware_model);
-			}
+	// choose whether this is an upgrade or a restore (default to upgrade)
+	client->tss = NULL;
+	plist_t build_identity = NULL;
+	int build_identity_needs_free = 0;
+	if (is_restore_plist) {
+		build_identity = build_identity_from_restore_plist(client);
+		build_identity_needs_free = 1;
+	} else if (client->restore_variant) {
+		build_identity = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, client->restore_variant, 1);
+	} else if (client->flags & FLAG_ERASE) {
+		build_identity = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, RESTORE_VARIANT_ERASE_INSTALL, 0);
+	} else {
+		build_identity = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, RESTORE_VARIANT_UPGRADE_INSTALL, 0);
+		if (!build_identity) {
+			build_identity = build_manifest_get_build_identity_for_model(client->build_manifest, client->device->hardware_model);
 		}
 	}
 	if (build_identity == NULL) {
@@ -1491,7 +1467,8 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 				plist_free(client->tss);
 			return -2;
 		}
-	} else if (client->mode == MODE_RECOVERY) {
+	} else if (client->mode == MODE_RECOVERY &&
+		(!is_legacy_ios(client->version) || build_identity_has_component(build_identity, "iBEC"))) {
 		// device is in recovery mode
 		if ((client->build_major > 8) && !(client->flags & FLAG_CUSTOM)) {
 			if (!client->image4supported) {
@@ -2179,6 +2156,7 @@ int is_image4_supported(struct idevicerestore_client_t* client)
 	case _MODE_RESTORE:
 		res = restore_is_image4_supported(client);
 		break;
+	case _MODE_WTF:
 	case _MODE_DFU:
 		res = dfu_is_image4_supported(client);
 		break;
@@ -2968,24 +2946,13 @@ int build_manifest_check_compatibility(plist_t build_manifest, const char* produ
 	int res = -1;
 	plist_t node = plist_dict_get_item(build_manifest, "SupportedProductTypes");
 	if (!node || (plist_get_node_type(node) != PLIST_ARRAY)) {
-		logger(LL_DEBUG, "%s: ERROR: SupportedProductTypes key missing\n", __func__);
-		node = plist_dict_get_item(build_manifest, "ProductType");
-		if (plist_get_node_type(node) == PLIST_STRING) {
-			char *val = NULL;
-			plist_get_string_val(node, &val);
-			if (val && (strcmp(val, product) == 0)) {
-				res = 0;
-				free(val);
-			}
-			const char *product2 = "iPod1,1";
-			if (val && (strcmp(val, product2) == 0)) {
-				res = 0;
-				free(val);
-			}
-		} else {
-			logger(LL_DEBUG, "%s: ERROR: ProductType key missing\n", __func__);
+		const char *version = plist_get_string_ptr(plist_dict_get_item(build_manifest, "ProductVersion"), NULL);
+		const char *legacy_product = plist_get_string_ptr(plist_dict_get_item(build_manifest, "ProductType"), NULL);
+		if (!node && is_legacy_ios(version) && legacy_product && product) {
+			return strcmp(legacy_product, product) == 0 ? 0 : -1;
 		}
-		return res;
+		logger(LL_DEBUG, "%s: SupportedProductTypes key missing or invalid\n", __func__);
+		return -1;
 	}
 	uint32_t pc = plist_array_get_size(node);
 	uint32_t i;
@@ -2999,6 +2966,7 @@ int build_manifest_check_compatibility(plist_t build_manifest, const char* produ
 				free(val);
 				break;
 			}
+			free(val);
 		}
 	}
 	return res;
@@ -3173,6 +3141,7 @@ const char* get_component_name(const char* filename)
 		{ "batterycharging", 15, "BatteryCharging" },
 		{ "batterycharging0", 16, "BatteryCharging0" },
 		{ "batterycharging1", 16, "BatteryCharging1" },
+		{ "batterycharging.", 16, "BatteryCharging" },
 		{ "batteryfull", 11, "BatteryFull" },
 		{ "needservice", 11, "NeedService" },
 		{ "SCAB", 4, "SCAB" },

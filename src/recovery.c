@@ -123,11 +123,14 @@ int recovery_set_autoboot(struct idevicerestore_client_t* client, int enable)
 	return 0;
 }
 
+static int recovery_send_kernelcache_noboot(struct idevicerestore_client_t *client, plist_t build_identity);
+static int recovery_boot_kernelcache(struct idevicerestore_client_t *client);
+
 int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build_identity)
 {
     if (client->macos_variant) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -restore");
-    } else if (client->build_major >= 8) {
+    } else if (!client->restore_boot_args && (client->build_major >= 8 || is_legacy_ios(client->version))) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress");
     }
 
@@ -228,10 +231,15 @@ int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build
 		}
 	}
 
-	mutex_lock(&client->device_event_mutex);
-	if (recovery_send_kernelcache(client, build_identity) < 0) {
-		mutex_unlock(&client->device_event_mutex);
+	/* Legacy uploads can invoke callbacks that need the event mutex. */
+	if (recovery_send_kernelcache_noboot(client, build_identity) < 0) {
 		logger(LL_ERROR, "Unable to send KernelCache\n");
+		return -1;
+	}
+	mutex_lock(&client->device_event_mutex);
+	if (recovery_boot_kernelcache(client) < 0) {
+		mutex_unlock(&client->device_event_mutex);
+		logger(LL_ERROR, "Unable to boot KernelCache\n");
 		return -1;
 	}
 
@@ -347,10 +355,9 @@ int recovery_send_component_and_command(struct idevicerestore_client_t* client, 
 	return 0;
 }
 
-int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_identity)
+static int recovery_send_ibec_nogo(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	const char* component = "iBEC";
-	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 
 	if (client->recovery == NULL) {
 		if (recovery_client_new(client) < 0) {
@@ -363,9 +370,15 @@ int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_ide
 		return -1;
 	}
 
+	return 0;
+}
+
+static int recovery_run_go(struct idevicerestore_client_t *client)
+{
+	irecv_error_t recovery_error;
 	recovery_error = irecv_send_command_breq(client->recovery->client, "go", 1);
 	if (recovery_error != IRECV_E_SUCCESS) {
-		logger(LL_ERROR, "Unable to execute %s\n", component);
+		logger(LL_ERROR, "Unable to execute go\n");
 		return -1;
 	}
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
@@ -373,11 +386,22 @@ int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_ide
 	return 0;
 }
 
+int recovery_send_ibec(struct idevicerestore_client_t *client, plist_t build_identity)
+{
+	if (recovery_send_ibec_nogo(client, build_identity) < 0) {
+		return -1;
+	}
+	return recovery_run_go(client);
+}
+
 int recovery_boot_ibec(struct idevicerestore_client_t* client, plist_t build_identity)
 {
+	if (recovery_send_ibec_nogo(client, build_identity) < 0) {
+		return -1;
+	}
 	mutex_lock(&client->device_event_mutex);
 	unsigned int generation = client->recovery_generation;
-	if (recovery_send_ibec(client, build_identity) < 0) {
+	if (recovery_run_go(client) < 0) {
 		mutex_unlock(&client->device_event_mutex);
 		return -1;
 	}
@@ -516,10 +540,9 @@ int recovery_send_ramdisk(struct idevicerestore_client_t* client, plist_t build_
 	return 0;
 }
 
-int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t build_identity)
+static int recovery_send_kernelcache_noboot(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	const char* component = "RestoreKernelCache";
-	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 
 	if (client->recovery == NULL) {
 		if (recovery_client_new(client) < 0) {
@@ -534,20 +557,36 @@ int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t bu
 
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
 
+	return 0;
+}
+
+static int recovery_boot_kernelcache(struct idevicerestore_client_t *client)
+{
+	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 	if (client->restore_boot_args) {
 		char setba[256];
-		strcpy(setba, "setenv boot-args ");
-		strcat(setba, client->restore_boot_args);
+		if (snprintf(setba, sizeof(setba), "setenv boot-args %s", client->restore_boot_args) >= sizeof(setba)) {
+			logger(LL_ERROR, "Restore kernel boot arguments are too long\n");
+			return -1;
+		}
 		recovery_error = irecv_send_command(client->recovery->client, setba);
 	}
 
 	recovery_error = irecv_send_command_breq(client->recovery->client, "bootx", 1);
 	if (recovery_error != IRECV_E_SUCCESS) {
-		logger(LL_ERROR, "Unable to execute %s\n", component);
+		logger(LL_ERROR, "Unable to execute bootx\n");
 		return -1;
 	}
 
 	return 0;
+}
+
+int recovery_send_kernelcache(struct idevicerestore_client_t *client, plist_t build_identity)
+{
+	if (recovery_send_kernelcache_noboot(client, build_identity) < 0) {
+		return -1;
+	}
+	return recovery_boot_kernelcache(client);
 }
 
 int recovery_is_image4_supported(struct idevicerestore_client_t* client)
