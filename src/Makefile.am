@@ -40,6 +40,7 @@ idevicerestore_SOURCES = \
 	ipsw.c ipsw.h \
 	normal.c normal.h \
 	dfu.c dfu.h \
+	legacy.c legacy.h \
 	recovery.c recovery.h \
 	restore.c restore.h \
 	asr.c asr.h \

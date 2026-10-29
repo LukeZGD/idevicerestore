@@ -36,6 +36,7 @@
 #include "img3.h"
 #include "restore.h"
 #include "recovery.h"
+#include "legacy.h"
 
 static int recovery_progress_callback(irecv_client_t client, const irecv_event_t* event)
 {
@@ -62,6 +63,10 @@ void recovery_client_free(struct idevicerestore_client_t* client)
 
 int recovery_client_new(struct idevicerestore_client_t* client)
 {
+	if (legacy_is_ios1(client)) {
+		logger(LL_ERROR, "iPhone OS 1 requires the legacy recovery transport\n");
+		return -1;
+	}
 	int i = 0;
 	int attempts = 20;
 	irecv_client_t recovery = NULL;
@@ -128,7 +133,11 @@ static int recovery_boot_kernelcache(struct idevicerestore_client_t *client);
 
 int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build_identity)
 {
-    if (client->macos_variant) {
+	if (legacy_is_ios1(client)) {
+		recovery_client_free(client);
+		return legacy_recovery_restore(client, build_identity);
+	}
+    if (!client->restore_boot_args && client->macos_variant) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -restore");
     } else if (!client->restore_boot_args && (client->build_major >= 8 || is_legacy_ios(client->version))) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress");

@@ -54,6 +54,7 @@
 #include "restore.h"
 #include "download.h"
 #include "recovery.h"
+#include "legacy.h"
 #include "idevicerestore.h"
 
 #ifdef HAVE_LIMERA1N
@@ -325,7 +326,8 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 		if (!client->udid && !client->ecid) {
 			client->ecid = event->device_info->ecid;
 		}
-		if ((client->ecid || event->device_info->cpid == 0x8900) && event->device_info->ecid == client->ecid) {
+		if ((client->ecid || event->device_info->cpid == 0x8900 ||
+			(!client->udid && event->mode == IRECV_K_WTF_MODE)) && event->device_info->ecid == client->ecid) {
 			mutex_lock(&client->device_event_mutex);
 			switch (event->mode) {
 				case IRECV_K_WTF_MODE:
@@ -357,7 +359,8 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 			mutex_unlock(&client->device_event_mutex);
 		}
 	} else if (event->type == IRECV_DEVICE_REMOVE) {
-		if ((client->ecid || event->device_info->cpid == 0x8900) && event->device_info->ecid == client->ecid) {
+		if ((client->ecid || event->device_info->cpid == 0x8900 ||
+			(!client->udid && event->mode == IRECV_K_WTF_MODE)) && event->device_info->ecid == client->ecid) {
 			mutex_lock(&client->device_event_mutex);
 			client->mode = MODE_UNKNOWN;
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) disconnected\n", __func__, client->ecid, (client->udid) ? client->udid : "N/A");
@@ -371,6 +374,79 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 			mutex_unlock(&client->device_event_mutex);
 		}
 	}
+}
+
+/* WTF devices without serial descriptors may be absent from device events. */
+static void probe_wtf_device(struct idevicerestore_client_t *client)
+{
+	if (client->udid || client->ecid || (client->flags & FLAG_QUIT)) {
+		return;
+	}
+	irecv_client_t device = NULL;
+	if (irecv_open_with_ecid(&device, IRECV_K_WTF_MODE) != IRECV_E_SUCCESS) {
+		return;
+	}
+	int mode = 0;
+	const struct irecv_device_info *info = irecv_get_device_info(device);
+	if (irecv_get_mode(device, &mode) == IRECV_E_SUCCESS && mode == IRECV_K_WTF_MODE && info) {
+		mutex_lock(&client->device_event_mutex);
+		if (client->mode == MODE_UNKNOWN && !(client->flags & FLAG_QUIT)) {
+			client->mode = MODE_WTF;
+			client->dfu_generation++;
+			cond_signal(&client->device_event_cond);
+		}
+		mutex_unlock(&client->device_event_mutex);
+	}
+	irecv_close(device);
+}
+
+static irecv_device_t select_s5l8900_device(struct idevicerestore_client_t *client)
+{
+	const char *products[] = { "iPhone1,1", "iPhone1,2", "iPod1,1" };
+	const char *names[] = { "iPhone 2G", "iPhone 3G", "iPod touch 1G" };
+	irecv_device_t device = NULL;
+	plist_t restore_plist = NULL;
+	if (client->ipsw && ipsw_file_exists(client->ipsw, "Restore.plist")) {
+		ipsw_extract_restore_plist(client->ipsw, &restore_plist);
+	}
+	const char *firmware_product = restore_plist ? plist_get_string_ptr(plist_dict_get_item(restore_plist, "ProductType"), NULL) : NULL;
+	if (client->flags & FLAG_INTERACTIVE) {
+		logger(LL_INFO, "This S5L8900 WTF device does not identify its model.\n");
+		for (unsigned int i = 0; i < 3; i++) {
+			logger(LL_INFO, "  [%u] %s (%s)\n", i + 1, names[i], products[i]);
+		}
+		while (!(client->flags & FLAG_QUIT)) {
+			char input[64];
+			printf("Select the attached device model (empty to cancel): ");
+			fflush(stdout);
+			get_user_input(input, sizeof(input), 0);
+			if (!*input || (client->flags & FLAG_QUIT)) {
+				break;
+			}
+			if (input[0] < '1' || input[0] > '3' || input[1]) {
+				logger(LL_ERROR, "Choose 1, 2, or 3.\n");
+				continue;
+			}
+			irecv_devices_get_device_by_product_type(products[input[0] - '1'], &device);
+			break;
+		}
+	} else if (firmware_product) {
+		irecv_devices_get_device_by_product_type(firmware_product, &device);
+		if (device && device->chip_id != 0x8900) {
+			device = NULL;
+		}
+		if (device) {
+			logger(LL_NOTICE, "Using firmware ProductType %s for the S5L8900 WTF device\n", firmware_product);
+		}
+	} else {
+		logger(LL_ERROR, "Cannot identify the WTF device model. Run interactively to select it.\n");
+	}
+	if (device && firmware_product && strcmp(device->product_type, firmware_product)) {
+		logger(LL_ERROR, "Selected device %s does not match firmware ProductType %s\n", device->product_type, firmware_product);
+		device = NULL;
+	}
+	plist_free(restore_plist);
+	return device;
 }
 
 int build_identity_check_components_in_ipsw(plist_t build_identity, ipsw_archive_t ipsw);
@@ -506,6 +582,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 {
 	int tss_enabled = 0;
 	int result = 0;
+	irecv_device_t wtf_device = NULL;
 
 	if (!client) {
 		return -1;
@@ -549,6 +626,17 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	mutex_lock(&client->device_event_mutex);
 	if (client->mode == MODE_UNKNOWN) {
 		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+		if (client->mode == MODE_UNKNOWN && !(client->flags & FLAG_QUIT)) {
+			mutex_unlock(&client->device_event_mutex);
+			probe_wtf_device(client);
+			irecv_device_t legacy_device = legacy_recovery_probe(client);
+			mutex_lock(&client->device_event_mutex);
+			if (legacy_device && client->mode == MODE_UNKNOWN && !(client->flags & FLAG_QUIT)) {
+				client->device = legacy_device;
+				client->mode = MODE_RECOVERY;
+				client->legacy_recovery = 1;
+			}
+		}
 		if (client->mode == MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
 			mutex_unlock(&client->device_event_mutex);
 			logger(LL_ERROR, "Unable to discover device mode. Please make sure a device is attached.\n");
@@ -566,10 +654,29 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			logger(LL_ERROR, "Could not open device in WTF mode\n");
 			return -1;
 		}
-		if ((dfu_get_cpid(client, &cpid) < 0) || (cpid == 0)) {
+		if (dfu_get_cpid(client, &cpid) < 0) {
 			logger(LL_ERROR, "Could not get CPID for WTF mode device\n");
 			dfu_client_free(client);
 			return -1;
+		}
+		int mode = 0;
+		if (irecv_get_mode(client->dfu->client, &mode) != IRECV_E_SUCCESS || mode != IRECV_K_WTF_MODE) {
+			logger(LL_ERROR, "Device is no longer in WTF mode\n");
+			dfu_client_free(client);
+			return -1;
+		}
+		if (cpid == 0 || cpid == 0x8900) {
+			wtf_device = select_s5l8900_device(client);
+			if (!wtf_device) {
+				dfu_client_free(client);
+				return -1;
+			}
+			cpid = wtf_device->chip_id;
+			client->device = wtf_device;
+		}
+		if (client->flags & FLAG_NOACTION) {
+			dfu_client_free(client);
+			return 0;
 		}
 
 		char wtfname[256];
@@ -657,7 +764,17 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 
 	// discover the device type
+	if (client->mode == MODE_RECOVERY && !client->ecid && !client->udid) {
+		irecv_device_t device = legacy_recovery_probe(client);
+		if (device) {
+			client->legacy_recovery = 1;
+			client->device = device;
+		}
+	}
 	client->device = get_irecv_device(client);
+	if (wtf_device && (client->mode == MODE_WTF || client->mode == MODE_DFU)) {
+		client->device = wtf_device;
+	}
 	if (client->device == NULL) {
 		logger(LL_ERROR, "Unable to discover device type\n");
 		return -1;
@@ -1038,7 +1155,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 
 	idevicerestore_progress(client, RESTORE_STEP_DETECT, 0.8);
 
-	if (client->mode == MODE_WTF && is_restore_plist && client->device->chip_id == 0x8900) {
+	if (!wtf_device && client->mode == MODE_WTF && is_restore_plist && client->device->chip_id == 0x8900) {
 		const char *product = plist_get_string_ptr(plist_dict_get_item(client->build_manifest, "ProductType"), NULL);
 		irecv_device_t device = NULL;
 		if (!product || irecv_devices_get_device_by_product_type(product, &device) != IRECV_E_SUCCESS ||
@@ -1063,6 +1180,14 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 
 	logger(LL_INFO, "IPSW Product Version: %s\n", client->version);
+	if (legacy_is_ios1(client) && legacy_set_boot_args(client) < 0) {
+		logger(LL_ERROR, "Unable to prepare iPhone OS 1 restore boot arguments\n");
+		return -1;
+	}
+	if (legacy_is_ios1(client) && (client->ibss_loaded || client->ticket_ap_nonce_size || *client->nonce_generator || client->auxiliary_manifest)) {
+		logger(LL_ERROR, "iPhone OS 1 does not support iBEC nonce preparation or auxiliary signing\n");
+		return -1;
+	}
 	logger(LL_INFO, "IPSW Product Build: %s Major: %d\n", client->build, client->build_major);
 
 	client->image4supported = is_image4_supported(client);
@@ -1467,7 +1592,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 				plist_free(client->tss);
 			return -2;
 		}
-	} else if (client->mode == MODE_RECOVERY &&
+	} else if (client->mode == MODE_RECOVERY && !legacy_is_ios1(client) &&
 		(!is_legacy_ios(client->version) || build_identity_has_component(build_identity, "iBEC"))) {
 		// device is in recovery mode
 		if ((client->build_major > 8) && !(client->flags & FLAG_CUSTOM)) {
@@ -1607,8 +1732,10 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	}
 
 	if (result == 0) {
+		if (client->progress_cb) {
+			idevicerestore_progress(client, RESTORE_NUM_STEPS-1, 1.0);
+		}
 		logger(LL_INFO, "DONE\n");
-		idevicerestore_progress(client, RESTORE_NUM_STEPS-1, 1.0);
 	} else {
 		logger(LL_INFO, "RESTORE FAILED\n");
 	}
@@ -2116,6 +2243,9 @@ int main(int argc, char* argv[])
 
 irecv_device_t get_irecv_device(struct idevicerestore_client_t *client)
 {
+	if (client->legacy_recovery && client->mode == MODE_RECOVERY) {
+		return client->device;
+	}
 	int mode = _MODE_UNKNOWN;
 
 	if (client->mode) {
@@ -2142,6 +2272,7 @@ irecv_device_t get_irecv_device(struct idevicerestore_client_t *client)
 
 int is_image4_supported(struct idevicerestore_client_t* client)
 {
+	if (client->legacy_recovery) return 0;
 	int res = 0;
 	int mode = _MODE_UNKNOWN;
 

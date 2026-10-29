@@ -34,6 +34,7 @@
 #include "recovery.h"
 #include "idevicerestore.h"
 #include "common.h"
+#include "legacy.h"
 
 static int dfu_progress_callback(irecv_client_t client, const irecv_event_t* event) {
 	if (event->type == IRECV_PROGRESS) {
@@ -628,8 +629,21 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	if (is_legacy_ios(client->version)) {
 		/* Wait for a reconnect without requiring observation of the disconnect. */
+		logger(LL_INFO, "Waiting for legacy iBSS recovery...\n");
 		time_t deadline = time(NULL) + 120;
 		while (client->recovery_generation == recovery_generation && !(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+			/* iPhone OS 1 has no serial descriptor for the event listener. */
+			if (legacy_is_ios1(client)) {
+				mutex_unlock(&client->device_event_mutex);
+				irecv_device_t device = legacy_recovery_probe(client);
+				mutex_lock(&client->device_event_mutex);
+				if (device && !(client->flags & FLAG_QUIT)) {
+					client->mode = MODE_RECOVERY;
+					client->legacy_recovery = 1;
+					client->recovery_generation++;
+					break;
+				}
+			}
 			cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000);
 		}
 		if (client->recovery_generation == recovery_generation || client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
@@ -658,6 +672,10 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 		}
 	}
 	mutex_unlock(&client->device_event_mutex);
+
+	if (legacy_is_ios1(client)) {
+		return 0;
+	}
 
 	if (recovery_client_new(client) < 0) {
 		logger(LL_ERROR, "Unable to connect to recovery device\n");

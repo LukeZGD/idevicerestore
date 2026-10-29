@@ -166,6 +166,29 @@ static int restore_has_legacy_identity(struct idevicerestore_client_t *client)
 		(client->device->chip_id == 0x8900 || client->device->chip_id == 0x8720);
 }
 
+/* Early restored provides HardwareModel through QueryType instead of HardwareInfo. */
+static restored_error_t restore_query_hardware_info(struct idevicerestore_client_t *client, restored_client_t restored, uint64_t version, plist_t *hwinfo)
+{
+	*hwinfo = NULL;
+	if (version != 7 && !(version == 11 && restore_has_legacy_identity(client))) {
+		return restored_query_value(restored, "HardwareInfo", hwinfo);
+	}
+	plist_t node = NULL;
+	if (restored_get_value(restored, "HardwareModel", &node) != RESTORE_E_SUCCESS || !PLIST_IS_STRING(node)) {
+		plist_free(node);
+		return RESTORE_E_PLIST_ERROR;
+	}
+	irecv_device_t device = NULL;
+	const char *model = plist_get_string_ptr(node, NULL);
+	irecv_error_t error = irecv_devices_get_device_by_hardware_model(model, &device);
+	plist_free(node);
+	if (error != IRECV_E_SUCCESS || !device) return RESTORE_E_PLIST_ERROR;
+	*hwinfo = plist_new_dict();
+	plist_dict_set_item(*hwinfo, "ChipID", plist_new_uint(device->chip_id));
+	plist_dict_set_item(*hwinfo, "BoardID", plist_new_uint(device->board_id));
+	return RESTORE_E_SUCCESS;
+}
+
 static int restore_hardware_matches(struct idevicerestore_client_t *client, plist_t hwinfo, int unique_device)
 {
 	if (hwinfo && !PLIST_IS_DICT(hwinfo)) {
@@ -202,7 +225,7 @@ static int restore_hardware_matches(struct idevicerestore_client_t *client, plis
 	if (!restore_has_legacy_identity(client) || !unique_device) {
 		return 0;
 	}
-	logger(LL_NOTICE, "Legacy restored omitted ECID; using the only connected USB device\n");
+	logger(LL_INFO, "Legacy restored omitted ECID, using the only connected USB device\n");
 	return 1;
 }
 
@@ -265,7 +288,7 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 
 		if (client->ecid != 0 || restore_has_legacy_identity(client)) {
 			plist_t hwinfo = NULL;
-			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
+			if (restore_query_hardware_info(client, restore, version, &hwinfo) != RESTORE_E_SUCCESS) {
 				plist_free(hwinfo);
 				hwinfo = NULL;
 			}
@@ -361,6 +384,7 @@ irecv_device_t restore_get_irecv_device(struct idevicerestore_client_t* client)
 	}
 
 	plist_get_string_val(node, &model);
+	plist_free(node);
 	irecv_devices_get_device_by_hardware_model(model, &irecv_device);
 	free(model);
 
@@ -370,6 +394,7 @@ irecv_device_t restore_get_irecv_device(struct idevicerestore_client_t* client)
 int restore_is_image4_supported(struct idevicerestore_client_t* client)
 {
 	int result = 0;
+	uint64_t version = 0;
 	plist_t hwinfo = NULL;
 	idevice_t device = NULL;
 	restored_client_t restore = NULL;
@@ -386,13 +411,13 @@ int restore_is_image4_supported(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
-	if (restored_query_type(restore, NULL, NULL) != RESTORE_E_SUCCESS) {
+	if (restored_query_type(restore, NULL, &version) != RESTORE_E_SUCCESS) {
 		restored_client_free(restore);
 		idevice_free(device);
 		return -1;
 	}
 
-	restore_error = restored_query_value(restore, "HardwareInfo", &hwinfo);
+	restore_error = restore_query_hardware_info(client, restore, version, &hwinfo);
 	if (restore_error == RESTORE_E_SUCCESS) {
 		uint8_t b = 0;
 		plist_t node = plist_dict_get_item(hwinfo, "SupportsImage4");
@@ -401,6 +426,7 @@ int restore_is_image4_supported(struct idevicerestore_client_t* client)
 			result = b;
 		}
 	}
+	plist_free(hwinfo);
 	restored_client_free(restore);
 	idevice_free(device);
 
@@ -475,7 +501,7 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 
 	free(type);
 	plist_t hwinfo = NULL;
-	restore_error = restored_query_value(restored, "HardwareInfo", &hwinfo);
+	restore_error = restore_query_hardware_info(client, restored, version, &hwinfo);
 	if (restore_error != RESTORE_E_SUCCESS) {
 		plist_free(hwinfo);
 		hwinfo = NULL;
@@ -5420,17 +5446,62 @@ struct restore_v7_state {
 	int filesystem_sent;
 };
 
+static int restore_wait_for_v7_disconnect(struct idevicerestore_client_t *client)
+{
+	time_t deadline = time(NULL) + 30;
+	logger(LL_INFO, "Waiting for device to leave restore mode...\n");
+	while (!(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+		mutex_lock(&client->device_event_mutex);
+		int disconnected = client->mode == MODE_UNKNOWN || client->mode == MODE_NORMAL;
+		mutex_unlock(&client->device_event_mutex);
+		if (!disconnected) {
+			char **devices = NULL;
+			int count = 0;
+			if (idevice_get_device_list(&devices, &count) == IDEVICE_E_SUCCESS) {
+				disconnected = 1;
+				for (int i = 0; i < count; i++) {
+					if (client->udid && !strcmp(client->udid, devices[i])) disconnected = 0;
+				}
+			}
+			idevice_device_list_free(devices);
+		}
+		if (disconnected) {
+			logger(LL_INFO, "Device left restore mode\n");
+			return 0;
+		}
+		usleep(250000);
+	}
+	logger(LL_ERROR, "Device acknowledged Goodbye but did not leave restore mode\n");
+	return -1;
+}
+
 static int restore_process_v7_protocol(struct idevicerestore_client_t *client, plist_t message, struct restore_v7_state *state)
 {
 	restored_client_t restore = client->restore->client;
 	plist_t response = plist_dict_get_item(message, "Response");
 	if (!PLIST_IS_STRING(response)) {
+		plist_t type = plist_dict_get_item(message, "MsgType");
+		if (PLIST_IS_STRING(type) && !plist_string_val_compare(type, "ProgressMsg")) {
+			return restore_handle_progress_msg(client, message);
+		}
+		if (PLIST_IS_STRING(type) && !plist_string_val_compare(type, "PreviousRestoreLogMsg")) {
+			return restore_handle_previous_restore_log_msg(restore, message);
+		}
 		logger(LL_ERROR, "Legacy restore response is missing Response\n");
+		logger_dump_plist(LL_ERROR, message, 1);
 		return -1;
 	}
 	if (!plist_string_val_compare(response, "Acknowledged")) {
-		if (state->stage == RESTORE_IMAGE) {
-			if (state->filesystem_sent || restore_send_filesystem(client, NULL) < 0) {
+		if (state->stage == REBOOT_DEVICE) {
+			/* Goodbye acknowledges before reboot and has no Complete response. */
+			if (restore_wait_for_v7_disconnect(client) < 0) return -1;
+			logger(LL_INFO, "Done restoring\n");
+			restore_finished = 1;
+			client->flags |= FLAG_QUIT;
+			return 0;
+		}
+		if (state->stage == RESTORE_IMAGE && !state->filesystem_sent) {
+			if (restore_send_filesystem(client, NULL) < 0) {
 				logger(LL_ERROR, "Unable to send legacy restore filesystem\n");
 				return -1;
 			}
@@ -5442,7 +5513,8 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t *client, p
 	plist_t status = plist_dict_get_item(message, "Status");
 	int64_t result = -1;
 	if (plist_string_val_compare(response, "Complete") || !PLIST_IS_UINT(status)) {
-		logger(LL_ERROR, "Invalid legacy restore completion response\n");
+		logger(LL_ERROR, "Invalid legacy restore response at stage %" PRIu64 ":\n", state->stage);
+		logger_dump_plist(LL_ERROR, message, 1);
 		return -1;
 	}
 	plist_get_int_val(status, &result);
@@ -5586,9 +5658,12 @@ static int restore_process_v7_protocol(struct idevicerestore_client_t *client, p
 		break;
 
 	case MAKE_STAGE(MODIFY_BOOTARGS, 1):
-		logger(LL_INFO, "Done restoring\n");
-		restore_finished = 1;
-		client->flags |= FLAG_QUIT;
+		next_stage = MAKE_STAGE(REBOOT_DEVICE, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Goodbye"));
+		break;
+	case MAKE_STAGE(REBOOT_DEVICE, 0):
+		logger(LL_ERROR, "Expected acknowledgement of legacy Goodbye\n");
+		err = -1;
 		break;
 
 	default:
@@ -5646,7 +5721,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	restore = client->restore->client;
 	device = client->restore->device;
 
-	restore_error = restored_query_value(restore, "HardwareInfo", &hwinfo);
+	restore_error = restore_query_hardware_info(client, restore, client->restore->protocol_version, &hwinfo);
 	if (restore_error == RESTORE_E_SUCCESS) {
 		uint64_t i = 0;
 		uint8_t b = 0;
@@ -5678,7 +5753,10 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_free(hwinfo);
 	}
 
-	restore_error = restored_query_value(restore, "SavedDebugInfo", &hwinfo);
+	hwinfo = NULL;
+	restore_error = (client->restore->protocol_version == 7 ||
+		(client->restore->protocol_version == 11 && restore_has_legacy_identity(client))) ? RESTORE_E_PLIST_ERROR :
+		restored_query_value(restore, "SavedDebugInfo", &hwinfo);
 	if (restore_error == RESTORE_E_SUCCESS) {
 		char* sval = NULL;
 
@@ -5937,7 +6015,18 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	plist_dict_set_item(opts, "SystemPartitionPadding", spp);
 
 	// start the restore process
-	restore_error = restored_start_restore(restore, opts, client->restore->protocol_version);
+	if (client->restore->protocol_version == 7) {
+		/* Protocol 7 starts with WaitPath instead of StartRestore. */
+		plist_t command = plist_new_dict();
+		plist_dict_set_item(command, "Operation", plist_new_string("WaitPath"));
+		plist_dict_set_item(command, "Path", plist_new_string("/dev/disk0"));
+		plist_dict_set_item(command, "WaitDelay", plist_new_uint(1));
+		plist_dict_set_item(command, "WaitLimit", plist_new_uint(120));
+		restore_error = restored_send(restore, command);
+		plist_free(command);
+	} else {
+		restore_error = restored_start_restore(restore, opts, client->restore->protocol_version);
+	}
 	if (restore_error != RESTORE_E_SUCCESS) {
 		logger(LL_ERROR, "Unable to start the restore process\n");
 		plist_free(opts);
