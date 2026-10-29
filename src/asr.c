@@ -138,13 +138,14 @@ int asr_receive(asr_client_t asr, plist_t* data)
 
 	*data = NULL;
 
-	buffer = (char*)malloc(ASR_BUFFER_SIZE);
+	buffer = (char*)malloc(ASR_BUFFER_SIZE + 1);
 	if (buffer == NULL) {
 		logger(LL_ERROR, "Unable to allocate memory for ASR receive buffer\n");
 		return -1;
 	}
 
 	unsigned int waited = 0;
+	uint32_t received = 0;
 	do {
 		if (global_quit_flag) {
 			logger(LL_ERROR, "Cancelled while waiting for ASR\n");
@@ -152,11 +153,26 @@ int asr_receive(asr_client_t asr, plist_t* data)
 			return -1;
 		}
 		size = 0;
-		device_error = idevice_connection_receive_timeout(asr->connection, buffer, ASR_BUFFER_SIZE,
+		device_error = idevice_connection_receive_timeout(asr->connection, buffer + received, ASR_BUFFER_SIZE - received,
 			&size, ASR_RECEIVE_POLL_TIMEOUT);
-		if (device_error != IDEVICE_E_TIMEOUT || size != 0) {
+		if (size > ASR_BUFFER_SIZE - received) {
+			free(buffer);
+			return -1;
+		}
+		received += size;
+		buffer[received] = '\0';
+		if (device_error != IDEVICE_E_SUCCESS && device_error != IDEVICE_E_TIMEOUT) {
 			break;
 		}
+		/* ASR sends unframed XML. A USB/TCP read may contain only part of it. */
+		if (strstr(buffer, "</plist>")) {
+			device_error = IDEVICE_E_SUCCESS;
+			break;
+		}
+		if (received == ASR_BUFFER_SIZE || (device_error == IDEVICE_E_SUCCESS && !size)) {
+			break;
+		}
+		if (size) continue;
 		if (waited == 0) {
 			logger(LL_INFO, "Waiting for ASR response...\n");
 		}
@@ -164,17 +180,17 @@ int asr_receive(asr_client_t asr, plist_t* data)
 	} while (waited < ASR_RECEIVE_TIMEOUT);
 	if (device_error != IDEVICE_E_SUCCESS) {
 		logger(LL_ERROR, "Unable to receive data from ASR (error %d, received %u bytes)\n",
-			device_error, size);
+			device_error, received);
 		free(buffer);
 		return -1;
 	}
-	if (size == 0) {
+	if (received == 0) {
 		logger(LL_ERROR, "ASR closed the connection while waiting for a response\n");
 		free(buffer);
 		return -1;
 	}
-	plist_err_t parse_error = plist_from_xml(buffer, size, &request);
-	if (parse_error != PLIST_ERR_SUCCESS || plist_get_node_type(request) != PLIST_DICT) {
+	plist_err_t parse_error = plist_from_xml(buffer, received, &request);
+	if (!strstr(buffer, "</plist>") || parse_error != PLIST_ERR_SUCCESS || plist_get_node_type(request) != PLIST_DICT) {
 		logger(LL_ERROR, "Invalid plist received from ASR\n");
 		plist_free(request);
 		free(buffer);
@@ -183,7 +199,7 @@ int asr_receive(asr_client_t asr, plist_t* data)
 
 	*data = request;
 
-	logger(LL_DEBUG, "Received %d bytes:\n", size);
+	logger(LL_DEBUG, "Received %u bytes:\n", received);
 	logger_dump_plist(LL_DEBUG, request, 1);
 	free(buffer);
 	return 0;
