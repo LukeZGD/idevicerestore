@@ -972,5 +972,5 @@ const char* path_get_basename(const char* path)
 
 int is_legacy_ios(const char *version)
 {
-	return version && (version[0] == '1' || version[0] == '2') && version[1] == '.';
+	return version && (version[0] >= '1' && version[0] <= '3') && version[1] == '.';
 }

@@ -960,9 +960,13 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		logger(LL_INFO, "Extracting BuildManifest from IPSW\n");
 		if (!ipsw_file_exists(client->ipsw, "BuildManifest.plist") &&
 			!ipsw_file_exists(client->ipsw, "BuildManifesto.plist")) {
-			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0 ||
-				!is_legacy_ios(plist_get_string_ptr(plist_dict_get_item(client->build_manifest, "ProductVersion"), NULL))) {
-				logger(LL_ERROR, "Missing BuildManifest; Restore.plist fallback requires iOS 1.x or 2.x\n");
+			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
+				logger(LL_ERROR, "Missing BuildManifest and valid Restore.plist\n");
+				return -1;
+			}
+			const char *version = plist_get_string_ptr(plist_dict_get_item(client->build_manifest, "ProductVersion"), NULL);
+			if (!is_legacy_ios(version)) {
+				logger(LL_ERROR, "Missing BuildManifest; Restore.plist fallback requires iPhone OS 1.x, 2.x, or 3.x\n");
 				return -1;
 			}
 			is_restore_plist = 1;
