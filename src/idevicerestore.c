@@ -1583,6 +1583,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.9);
 
 	if (client->mode != MODE_RESTORE) {
+		sleep(3);
 		mutex_lock(&client->device_event_mutex);
 		logger(LL_INFO, "Waiting for device to enter restore mode...\n");
 		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 300000);
