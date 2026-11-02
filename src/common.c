@@ -709,12 +709,10 @@ char* realpath(const char *filename, char *resolved_name)
 #endif
 
 #ifdef WIN32
-#define BS_CC '\b'
 #define CTRL_C_CC 0x03
 #define ESC_CC 0x1B
 #define my_getch _getch
 #else
-#define BS_CC 0x7f
 static int my_getch(void)
 {
 	struct termios oldt, newt;
@@ -737,14 +735,15 @@ void get_user_input(char *buf, int maxlen, int secure)
 	while ((c = my_getch()) > 0) {
 		if ((c == '\r') || (c == '\n')) {
 			break;
-		} else if (isprint(c)) {
-			if (len < maxlen-1)
-				buf[len++] = c;
-			fputc((secure) ? '*' : c, stdout);
-		} else if (c == BS_CC) {
+		} else if (c == '\b' || c == 0x7f) {
 			if (len > 0) {
 				fputs("\b \b", stdout);
 				len--;
+			}
+		} else if (isprint((unsigned char)c)) {
+			if (len < maxlen-1) {
+				buf[len++] = c;
+				fputc((secure) ? '*' : c, stdout);
 			}
 		}
 #ifdef WIN32
@@ -776,4 +775,9 @@ const char* path_get_basename(const char* path)
 	const char *p = strrchr(path, '/');
 	return p ? p + 1 : path;
 #endif
+}
+
+int is_legacy_ios(const char *version)
+{
+	return version && (version[0] >= '1' && version[0] <= '3') && version[1] == '.';
 }

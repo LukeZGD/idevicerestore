@@ -25,16 +25,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <time.h>
 #include <libirecovery.h>
 #include <libimobiledevice/restore.h>
 #include <libimobiledevice/libimobiledevice.h>
 
 #include <libtatsu/tss.h>
+#include <libimobiledevice-glue/sha.h>
 
 #include "idevicerestore.h"
 #include "img3.h"
 #include "restore.h"
 #include "recovery.h"
+#include "legacy.h"
 
 static int recovery_progress_callback(irecv_client_t client, const irecv_event_t* event)
 {
@@ -61,6 +64,10 @@ void recovery_client_free(struct idevicerestore_client_t* client)
 
 int recovery_client_new(struct idevicerestore_client_t* client)
 {
+	if (legacy_is_ios1(client)) {
+		logger(LL_ERROR, "iPhone OS 1 requires the legacy recovery transport\n");
+		return -1;
+	}
 	int i = 0;
 	int attempts = 20;
 	irecv_client_t recovery = NULL;
@@ -122,11 +129,18 @@ int recovery_set_autoboot(struct idevicerestore_client_t* client, int enable)
 	return 0;
 }
 
+static int recovery_send_kernelcache_noboot(struct idevicerestore_client_t *client, plist_t build_identity);
+static int recovery_boot_kernelcache(struct idevicerestore_client_t *client);
+
 int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build_identity)
 {
-    if (client->macos_variant) {
+	if (legacy_is_ios1(client)) {
+		recovery_client_free(client);
+		return legacy_recovery_restore(client, build_identity);
+	}
+    if (!client->restore_boot_args && client->macos_variant) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress -restore");
-    } else if (client->build_major >= 8) {
+    } else if (!client->restore_boot_args && (client->build_major >= 8 || is_legacy_ios(client->version))) {
         client->restore_boot_args = strdup("rd=md0 nand-enable-reformat=1 -progress");
     }
 
@@ -227,10 +241,15 @@ int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build
 		}
 	}
 
-	mutex_lock(&client->device_event_mutex);
-	if (recovery_send_kernelcache(client, build_identity) < 0) {
-		mutex_unlock(&client->device_event_mutex);
+	/* Legacy uploads can invoke callbacks that need the event mutex. */
+	if (recovery_send_kernelcache_noboot(client, build_identity) < 0) {
 		logger(LL_ERROR, "Unable to send KernelCache\n");
+		return -1;
+	}
+	mutex_lock(&client->device_event_mutex);
+	if (recovery_boot_kernelcache(client) < 0) {
+		mutex_unlock(&client->device_event_mutex);
+		logger(LL_ERROR, "Unable to boot KernelCache\n");
 		return -1;
 	}
 
@@ -284,7 +303,8 @@ int recovery_send_component(struct idevicerestore_client_t* client, plist_t buil
 	char* path = NULL;
 	irecv_error_t err = 0;
 
-	if (client->tss) {
+	/* Use build identity paths when loading saved SHSH. */
+	if (client->tss && !client->saved_tss) {
 		if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 			logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build_identity\n", component);
 		}
@@ -299,7 +319,20 @@ int recovery_send_component(struct idevicerestore_client_t* client, plist_t buil
 
 	void* component_data = NULL;
 	size_t component_size = 0;
-	int ret = extract_component(client->ipsw, path, &component_data, &component_size);
+	int nonce_ibec = client->use_nonce_ibec && !strcmp(component, "iBEC");
+	int ret;
+	if (nonce_ibec) {
+		ret = read_file(client->nonce_ibec_path, &component_data, &component_size);
+		if (ret < 0 || !component_data || !component_size || component_size > 128*1024*1024) {
+			free(path);
+			free(component_data);
+			logger(LL_ERROR, "Unable to read iBEC from %s\n", client->nonce_ibec_path);
+			return -1;
+		}
+		logger(LL_INFO, "Using iBEC from %s\n", client->nonce_ibec_path);
+	} else {
+		ret = extract_component(client->ipsw, path, &component_data, &component_size);
+	}
 	free(path);
 	if (ret < 0) {
 		logger(LL_ERROR, "Unable to extract component: %s\n", component);
@@ -346,10 +379,9 @@ int recovery_send_component_and_command(struct idevicerestore_client_t* client, 
 	return 0;
 }
 
-int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_identity)
+static int recovery_send_ibec_nogo(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	const char* component = "iBEC";
-	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 
 	if (client->recovery == NULL) {
 		if (recovery_client_new(client) < 0) {
@@ -362,13 +394,149 @@ int recovery_send_ibec(struct idevicerestore_client_t* client, plist_t build_ide
 		return -1;
 	}
 
+	return 0;
+}
+
+static int recovery_run_go(struct idevicerestore_client_t *client)
+{
+	irecv_error_t recovery_error;
 	recovery_error = irecv_send_command_breq(client->recovery->client, "go", 1);
 	if (recovery_error != IRECV_E_SUCCESS) {
-		logger(LL_ERROR, "Unable to execute %s\n", component);
+		logger(LL_ERROR, "Unable to execute go\n");
 		return -1;
 	}
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
 
+	return 0;
+}
+
+int recovery_send_ibec(struct idevicerestore_client_t *client, plist_t build_identity)
+{
+	if (recovery_send_ibec_nogo(client, build_identity) < 0) {
+		return -1;
+	}
+	return recovery_run_go(client);
+}
+
+int recovery_boot_ibec(struct idevicerestore_client_t* client, plist_t build_identity)
+{
+	if (recovery_send_ibec_nogo(client, build_identity) < 0) {
+		return -1;
+	}
+	mutex_lock(&client->device_event_mutex);
+	unsigned int generation = client->recovery_generation;
+	if (recovery_run_go(client) < 0) {
+		mutex_unlock(&client->device_event_mutex);
+		return -1;
+	}
+	recovery_client_free(client);
+	time_t deadline = time(NULL) + 60;
+	/* Count reconnects rather than requiring observation of the transient
+	 * disconnected mode: both USB events can arrive before the waiter runs. */
+	while (client->recovery_generation == generation && !(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 1000);
+	}
+	int ready = client->recovery_generation != generation && client->mode == MODE_RECOVERY && !(client->flags & FLAG_QUIT);
+	mutex_unlock(&client->device_event_mutex);
+	if (!ready) {
+		logger(LL_ERROR, "iBEC did not reconnect in recovery mode\n");
+		return -1;
+	}
+	return recovery_client_new(client);
+}
+
+static int recovery_write_nonce_generator(struct idevicerestore_client_t* client)
+{
+	if (irecv_setenv(client->recovery->client, "com.apple.System.boot-nonce", client->nonce_generator) != IRECV_E_SUCCESS ||
+		irecv_saveenv(client->recovery->client) != IRECV_E_SUCCESS) {
+		logger(LL_ERROR, "Unable to set and save nonce generator\n");
+		return -1;
+	}
+	char *value = NULL;
+	irecv_error_t error = irecv_getenv(client->recovery->client, "com.apple.System.boot-nonce", &value);
+	char *end = NULL;
+	int matches = error == IRECV_E_SUCCESS && value && *value &&
+		strtoull(value, &end, 16) == strtoull(client->nonce_generator, NULL, 16) && end && !*end;
+	free(value);
+	if (!matches) {
+		logger(LL_ERROR, "Unable to verify nonce generator\n");
+		return -1;
+	}
+	return 0;
+}
+
+int recovery_prepare_restore_nonce(struct idevicerestore_client_t* client, plist_t build_identity)
+{
+	if (!client->ticket_ap_nonce_size) {
+		return 0;
+	}
+	if (client->mode != MODE_RECOVERY ||
+		((!client->recovery || !client->recovery->client) && recovery_client_new(client) < 0)) {
+		logger(LL_ERROR, "Unable to connect in recovery mode to check AP nonce\n");
+		return -1;
+	}
+	unsigned char *nonce = NULL;
+	unsigned int size = 0;
+	if (recovery_get_ap_nonce(client, &nonce, &size) < 0 || !nonce) {
+		free(nonce);
+		logger(LL_ERROR, "Unable to read the AP nonce before restoring\n");
+		return -1;
+	}
+	int matches = size == client->ticket_ap_nonce_size && !memcmp(nonce, client->ticket_ap_nonce, size);
+	free(nonce);
+	if (matches) {
+		logger(LL_INFO, "AP nonce matches restore ticket, no generator change needed\n");
+		return 0;
+	}
+	if (!*client->nonce_generator) {
+		logger(LL_ERROR, "AP nonce does not match restore ticket\n");
+		return -1;
+	}
+	uint64_t generator = strtoull(client->nonce_generator, NULL, 16);
+	unsigned char seed[8], digest[48];
+	for (unsigned int i = 0; i < sizeof(seed); i++) {
+		seed[i] = (unsigned char)(generator >> (8*i));
+	}
+	if (client->ticket_ap_nonce_size == 20) {
+		sha1(seed, sizeof(seed), digest);
+	} else {
+		sha384(seed, sizeof(seed), digest);
+	}
+	if (memcmp(digest, client->ticket_ap_nonce, client->ticket_ap_nonce_size)) {
+		logger(LL_ERROR, "Nonce generator does not produce the expected AP nonce\n");
+		return -1;
+	}
+	logger(LL_INFO, "Setting nonce generator to %s and reloading iBEC...\n", client->nonce_generator);
+	if (recovery_write_nonce_generator(client) < 0) {
+		return -1;
+	}
+	client->use_nonce_ibec = 1;
+	int boot_result = recovery_boot_ibec(client, build_identity);
+	client->use_nonce_ibec = 0;
+	if (boot_result < 0) {
+		return -1;
+	}
+	nonce = NULL;
+	size = 0;
+	if (recovery_get_ap_nonce(client, &nonce, &size) < 0 || !nonce) {
+		free(nonce);
+		logger(LL_ERROR, "Unable to read the AP nonce after reloading iBEC\n");
+		return -1;
+	}
+	matches = size == client->ticket_ap_nonce_size && !memcmp(nonce, client->ticket_ap_nonce, size);
+	if (!matches) {
+		free(nonce);
+		logger(LL_ERROR, "AP nonce does not match restore ticket after reloading iBEC\n");
+		return -1;
+	}
+	free(client->nonce);
+	client->nonce = nonce;
+	client->nonce_size = size;
+	/* Retain the generator for subsequent boots. */
+	if (recovery_write_nonce_generator(client) < 0) {
+		return -1;
+	}
+	logger(LL_INFO, "AP nonce matches restore ticket after reloading iBEC\n");
 	return 0;
 }
 
@@ -491,10 +659,9 @@ int recovery_send_ramdisk(struct idevicerestore_client_t* client, plist_t build_
 	return 0;
 }
 
-int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t build_identity)
+static int recovery_send_kernelcache_noboot(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	const char* component = "RestoreKernelCache";
-	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 
 	if (client->recovery == NULL) {
 		if (recovery_client_new(client) < 0) {
@@ -509,20 +676,40 @@ int recovery_send_kernelcache(struct idevicerestore_client_t* client, plist_t bu
 
 	irecv_usb_control_transfer(client->recovery->client, 0x21, 1, 0, 0, 0, 0, 5000);
 
+	return 0;
+}
+
+static int recovery_boot_kernelcache(struct idevicerestore_client_t *client)
+{
+	irecv_error_t recovery_error = IRECV_E_SUCCESS;
 	if (client->restore_boot_args) {
 		char setba[256];
-		strcpy(setba, "setenv boot-args ");
-		strcat(setba, client->restore_boot_args);
+		if (snprintf(setba, sizeof(setba), "setenv boot-args %s", client->restore_boot_args) >= sizeof(setba)) {
+			logger(LL_ERROR, "Restore kernel boot arguments are too long\n");
+			return -1;
+		}
 		recovery_error = irecv_send_command(client->recovery->client, setba);
+		if (recovery_error != IRECV_E_SUCCESS) {
+			logger(LL_ERROR, "Unable to set restore kernel boot arguments\n");
+			return -1;
+		}
 	}
 
 	recovery_error = irecv_send_command_breq(client->recovery->client, "bootx", 1);
 	if (recovery_error != IRECV_E_SUCCESS) {
-		logger(LL_ERROR, "Unable to execute %s\n", component);
+		logger(LL_ERROR, "Unable to execute bootx\n");
 		return -1;
 	}
 
 	return 0;
+}
+
+int recovery_send_kernelcache(struct idevicerestore_client_t *client, plist_t build_identity)
+{
+	if (recovery_send_kernelcache_noboot(client, build_identity) < 0) {
+		return -1;
+	}
+	return recovery_boot_kernelcache(client);
 }
 
 int recovery_is_image4_supported(struct idevicerestore_client_t* client)

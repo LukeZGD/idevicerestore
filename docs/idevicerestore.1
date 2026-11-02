@@ -78,12 +78,46 @@ Override the default signing server request URL. If the URL doesn't contain
 a path component, the default path \f[B]/TSS/controller?action=2\f[] will be added.
 .TP
 .B \-x, \-\-exclude
-Exclude nor/baseband upgrade.
-
-\f[B]NOTE\f[]: This option only works with legacy devices and/or custom firmware.
+Do not flash NOR or baseband firmware.
 .TP
 .B \-t, \-\-shsh
 Fetch TSS record and save to .shsh file, then exit.
+.TP
+.B \-\-load\-shsh PATH
+Load a saved SHSH/SHSH2 plist, optionally gzip-compressed, and reuse it for
+TSS responses during restore.
+The caller must supply a ticket appropriate for the device and firmware.
+Component paths come from BuildManifest when this option is used.
+.TP
+.B \-\-allow\-auxiliary\-tss
+Allow auxiliary firmware signing with \f[B]\-\-load\-shsh\f[]. Without this
+option, missing auxiliary tickets or required local policy or RecoveryOS
+signing stop the restore.
+.TP
+.B \-\-firmware\-manifest PATH
+Sign SEP firmware using the BuildManifest at PATH.
+The IPSW must contain the matching SEP firmware. Requires
+\f[B]\-\-allow\-auxiliary\-tss\f[].
+.TP
+.B \-\-restore\-boot\-args ARGS
+Set restore kernel boot arguments, overriding the defaults.
+.TP
+.B \-\-ibss\-loaded
+Resume from an already running iBSS without sending it again. iBEC is still
+uploaded normally. In DFU mode, this requires soft DFU.
+.TP
+.B \-\-ticket\-apnonce HEX
+Check AP nonce against the expected ticket nonce before booting the restore ramdisk.
+.TP
+.B \-\-set\-nonce\-generator HEX
+If AP nonce differs from the ticket nonce, set and save this nonce generator,
+reload iBEC, and verify AP nonce before restoring. Requires
+\f[B]\-\-load\-shsh\f[], \f[B]\-\-ticket\-apnonce\f[] and
+\f[B]\-\-nonce\-ibec\f[].
+.TP
+.B \-\-nonce\-ibec PATH
+Use this iBEC after setting the nonce generator. It must support nonce
+generation and NVRAM writes. The initial iBEC comes from the IPSW.
 .TP
 .B \-z, \-\-no\-restore
 Do not restore and end after booting to the ramdisk.

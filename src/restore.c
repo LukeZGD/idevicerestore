@@ -123,6 +123,45 @@ static int restore_finished = 0;
 
 static int restore_device_connected = 0;
 
+/* Auxiliary signing needs explicit opt-in when restoring with a saved blob. */
+static plist_t restore_get_tss_response(struct idevicerestore_client_t* client, plist_t request)
+{
+	if (!client->saved_tss || client->allow_auxiliary_tss) {
+		return tss_request_send(request, client->tss_url);
+	}
+	plist_dict_iter iter = NULL;
+	char* key = NULL;
+	plist_t value = NULL;
+	int tickets = 0;
+	int missing = 0;
+	plist_dict_new_iter(request, &iter);
+	while (iter) {
+		plist_dict_next_item(request, iter, &key, &value);
+		if (!key) break;
+		uint8_t enabled = 0;
+		if (key[0] == '@' && strstr(key, "Ticket") && plist_get_node_type(value) == PLIST_BOOLEAN) {
+			plist_get_bool_val(value, &enabled);
+			if (enabled) {
+				tickets++;
+				plist_t saved = plist_dict_get_item(client->saved_tss, key+1);
+				uint64_t length = 0;
+				if (!saved || plist_get_node_type(saved) != PLIST_DATA || !plist_get_data_ptr(saved, &length) || !length) {
+					logger(LL_ERROR, "Saved SHSH is missing %s, auxiliary signing is disabled\n", key+1);
+					missing = 1;
+				}
+			}
+		}
+		free(key);
+	}
+	free(iter);
+	if (!tickets || missing) {
+		logger(LL_ERROR, "Saved SHSH cannot satisfy this auxiliary firmware request\n");
+		return NULL;
+	}
+	logger(LL_INFO, "Using saved SHSH for auxiliary firmware\n");
+	return plist_copy(client->saved_tss);
+}
+
 int restore_client_new(struct idevicerestore_client_t* client)
 {
 	struct restore_client_t* restore = (struct restore_client_t*) malloc(sizeof(struct restore_client_t));
@@ -160,15 +199,95 @@ void restore_client_free(struct idevicerestore_client_t* client)
 	}
 }
 
+static int restore_has_legacy_identity(struct idevicerestore_client_t *client)
+{
+	return client->device && is_legacy_ios(client->version) &&
+		(client->device->chip_id == 0x8900 || client->device->chip_id == 0x8720);
+}
+
+/* Early restored provides HardwareModel through QueryType instead of HardwareInfo. */
+static restored_error_t restore_query_hardware_info(struct idevicerestore_client_t *client, restored_client_t restored, uint64_t version, plist_t *hwinfo)
+{
+	*hwinfo = NULL;
+	if (version != 7 && !(version == 11 && restore_has_legacy_identity(client))) {
+		return restored_query_value(restored, "HardwareInfo", hwinfo);
+	}
+	plist_t node = NULL;
+	if (restored_get_value(restored, "HardwareModel", &node) != RESTORE_E_SUCCESS || !PLIST_IS_STRING(node)) {
+		plist_free(node);
+		return RESTORE_E_PLIST_ERROR;
+	}
+	irecv_device_t device = NULL;
+	const char *model = plist_get_string_ptr(node, NULL);
+	irecv_error_t error = irecv_devices_get_device_by_hardware_model(model, &device);
+	plist_free(node);
+	if (error != IRECV_E_SUCCESS || !device) return RESTORE_E_PLIST_ERROR;
+	*hwinfo = plist_new_dict();
+	plist_dict_set_item(*hwinfo, "ChipID", plist_new_uint(device->chip_id));
+	plist_dict_set_item(*hwinfo, "BoardID", plist_new_uint(device->board_id));
+	return RESTORE_E_SUCCESS;
+}
+
+static int restore_hardware_matches(struct idevicerestore_client_t *client, plist_t hwinfo, int unique_device)
+{
+	if (hwinfo && !PLIST_IS_DICT(hwinfo)) {
+		return 0;
+	}
+	plist_t node;
+	if (client->device) {
+		const char *keys[] = { "ChipID", "BoardID" };
+		uint64_t expected[] = { client->device->chip_id, client->device->board_id };
+		for (size_t i = 0; i < 2; i++) {
+			node = plist_dict_get_item(hwinfo, keys[i]);
+			if (node) {
+				uint64_t value = 0;
+				if (!PLIST_IS_UINT(node)) {
+					return 0;
+				}
+				plist_get_uint_val(node, &value);
+				if (value != expected[i]) {
+					return 0;
+				}
+			}
+		}
+	}
+	node = plist_dict_get_item(hwinfo, "UniqueChipID");
+	if (PLIST_IS_UINT(node)) {
+		uint64_t ecid = 0;
+		plist_get_uint_val(node, &ecid);
+		if (ecid) {
+			return client->ecid && ecid == client->ecid;
+		}
+	} else if (node) {
+		return 0;
+	}
+	if (!restore_has_legacy_identity(client) || !unique_device) {
+		return 0;
+	}
+	logger(LL_INFO, "Legacy restored omitted ECID, using the only connected USB device\n");
+	return 1;
+}
+
+static int restore_device_is_unique(const char *udid)
+{
+	char **devices = NULL;
+	int count = 0;
+	int result = idevice_get_device_list(&devices, &count) == IDEVICE_E_SUCCESS &&
+		count == 1 && udid && devices && devices[0] && !strcmp(devices[0], udid);
+	idevice_device_list_free(devices);
+	return result;
+}
+
 static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t* device)
 {
 	int num_devices = 0;
 	char **devices = NULL;
+	*device = NULL;
 	idevice_get_device_list(&devices, &num_devices);
 	if (num_devices == 0) {
+		idevice_device_list_free(devices);
 		return -1;
 	}
-	*device = NULL;
 	idevice_t dev = NULL;
 	idevice_error_t device_error;
 	restored_client_t restore = NULL;
@@ -196,37 +315,25 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 		char* type = NULL;
 		uint64_t version = 0;
 		if (restored_query_type(restore, &type, &version) != RESTORE_E_SUCCESS) {
+			logger(LL_DEBUG, "%s: restored QueryType failed for %s\n", __func__, devices[j]);
+			free(type);
 			continue;
 		}
-		if (strcmp(type, "com.apple.mobile.restored") != 0) {
+		if (!type || strcmp(type, "com.apple.mobile.restored") != 0) {
 			free(type);
 			continue;
 		}
 		free(type);
 
-		if (client->ecid != 0) {
-			plist_t node = NULL;
+		if (client->ecid != 0 || restore_has_legacy_identity(client)) {
 			plist_t hwinfo = NULL;
-
-			if (restored_query_value(restore, "HardwareInfo", &hwinfo) != RESTORE_E_SUCCESS) {
-				continue;
+			if (restore_query_hardware_info(client, restore, version, &hwinfo) != RESTORE_E_SUCCESS) {
+				plist_free(hwinfo);
+				hwinfo = NULL;
 			}
-
-			node = plist_dict_get_item(hwinfo, "UniqueChipID");
-			if (!node || plist_get_node_type(node) != PLIST_UINT) {
-				if (hwinfo) {
-					plist_free(hwinfo);
-				}
-				continue;
-			}
-			restored_client_free(restore);
-			restore = NULL;
-
-			uint64_t this_ecid = 0;
-			plist_get_uint_val(node, &this_ecid);
+			int matches = restore_hardware_matches(client, hwinfo, num_devices == 1);
 			plist_free(hwinfo);
-
-			if (this_ecid != client->ecid) {
+			if (!matches) {
 				continue;
 			}
 		}
@@ -234,13 +341,27 @@ static int restore_idevice_new(struct idevicerestore_client_t* client, idevice_t
 			restored_client_free(restore);
 			restore = NULL;
 		}
-		client->udid = strdup(devices[j]);
+		char* udid = strdup(devices[j]);
+		if (!udid) {
+			logger(LL_ERROR, "Unable to allocate restore device UDID\n");
+			break;
+		}
+		mutex_lock(&client->device_event_mutex);
+		free(client->udid);
+		client->udid = udid;
+		mutex_unlock(&client->device_event_mutex);
 		*device = dev;
 		break;
 	}
+	if (restore) {
+		restored_client_free(restore);
+	}
+	if (!*device && dev) {
+		idevice_free(dev);
+	}
 	idevice_device_list_free(devices);
 
-	return 0;
+	return *device ? 0 : -1;
 }
 
 int restore_check_mode(struct idevicerestore_client_t* client)
@@ -301,6 +422,7 @@ irecv_device_t restore_get_irecv_device(struct idevicerestore_client_t* client)
 	}
 
 	plist_get_string_val(node, &model);
+	plist_free(node);
 	irecv_devices_get_device_by_hardware_model(model, &irecv_device);
 	free(model);
 
@@ -310,6 +432,7 @@ irecv_device_t restore_get_irecv_device(struct idevicerestore_client_t* client)
 int restore_is_image4_supported(struct idevicerestore_client_t* client)
 {
 	int result = 0;
+	uint64_t version = 0;
 	plist_t hwinfo = NULL;
 	idevice_t device = NULL;
 	restored_client_t restore = NULL;
@@ -326,13 +449,13 @@ int restore_is_image4_supported(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
-	if (restored_query_type(restore, NULL, NULL) != RESTORE_E_SUCCESS) {
+	if (restored_query_type(restore, NULL, &version) != RESTORE_E_SUCCESS) {
 		restored_client_free(restore);
 		idevice_free(device);
 		return -1;
 	}
 
-	restore_error = restored_query_value(restore, "HardwareInfo", &hwinfo);
+	restore_error = restore_query_hardware_info(client, restore, version, &hwinfo);
 	if (restore_error == RESTORE_E_SUCCESS) {
 		uint8_t b = 0;
 		plist_t node = plist_dict_get_item(hwinfo, "SupportsImage4");
@@ -341,6 +464,7 @@ int restore_is_image4_supported(struct idevicerestore_client_t* client)
 			result = b;
 		}
 	}
+	plist_free(hwinfo);
 	restored_client_free(restore);
 	idevice_free(device);
 
@@ -378,7 +502,7 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 	if (!client) {
 		return 0;
 	}
-	if (!client->ecid) {
+	if (!client->ecid && !restore_has_legacy_identity(client)) {
 		logger(LL_ERROR, "%s: no ECID given in client data\n", __func__);
 		return 0;
 	}
@@ -407,36 +531,24 @@ static int restore_is_current_device(struct idevicerestore_client_t* client, con
 		logger(LL_DEBUG, "%s: Connected to %s, version %d\n", __func__, type, (int)version);
 	} else {
 		logger(LL_DEBUG, "%s: device %s is not in restore mode\n", __func__, udid);
+		free(type);
 		restored_client_free(restored);
 		idevice_free(device);
 		return 0;
 	}
 
+	free(type);
 	plist_t hwinfo = NULL;
-	restore_error = restored_query_value(restored, "HardwareInfo", &hwinfo);
-	if ((restore_error != RESTORE_E_SUCCESS) || !hwinfo) {
-		logger(LL_ERROR, "%s: Unable to get HardwareInfo from restored\n", __func__);
-		restored_client_free(restored);
-		idevice_free(device);
+	restore_error = restore_query_hardware_info(client, restored, version, &hwinfo);
+	if (restore_error != RESTORE_E_SUCCESS) {
 		plist_free(hwinfo);
-		return 0;
+		hwinfo = NULL;
 	}
+	int matches = restore_hardware_matches(client, hwinfo, restore_device_is_unique(udid));
+	plist_free(hwinfo);
 	restored_client_free(restored);
 	idevice_free(device);
-
-	uint64_t this_ecid = 0;
-	plist_t node = plist_dict_get_item(hwinfo, "UniqueChipID");
-	if (node && plist_get_node_type(node) == PLIST_UINT) {
-		plist_get_uint_val(node, &this_ecid);
-	}
-	plist_free(hwinfo);
-
-	if (this_ecid == 0) {
-		logger(LL_ERROR, "%s: Unable to get ECID from restored\n", __func__);
-		return 0;
-	}
-
-	return (this_ecid == client->ecid);
+	return matches;
 }
 
 int restore_open_with_timeout(struct idevicerestore_client_t* client)
@@ -453,7 +565,7 @@ int restore_open_with_timeout(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
-	if (client->ecid == 0 && (!client->device || client->device->chip_id != 0x8900)) {
+	if (client->ecid == 0 && !restore_has_legacy_identity(client)) {
 		logger(LL_ERROR, "no ECID in client data!\n");
 		return -1;
 	}
@@ -858,6 +970,9 @@ int restore_handle_status_msg(struct idevicerestore_client_t* client, plist_t ms
 		case 53:
 			logger(LL_INFO, "Status: Failed to recover FDR data.\n");
 			break;
+		case 1013:
+			logger(LL_INFO, "Status: Baseband update failed.\n");
+			break;
 		case 1015:
 			logger(LL_INFO, "Status: X-Gold Baseband Update Failed. Defective Unit?\n");
 			break;
@@ -1047,7 +1162,10 @@ int restore_send_filesystem(struct idevicerestore_client_t* client, plist_t mess
 	if (!file) {
 		logger(LL_ERROR, "Unable to open '%s' in ipsw\n", fsname);
 		free(fsname);
+		ipsw_close(ipsw_dummy);
+		return -1;
 	}
+	free(fsname);
 
 	uint16_t asr_port = (uint16_t)plist_dict_get_uint(message, "DataPort");
 	if (asr_port == 0) {
@@ -1473,7 +1591,7 @@ int restore_send_component(struct idevicerestore_client_t* client, plist_t messa
 
 	logger(LL_INFO, "About to send %s...\n", component_name);
 
-	if (client->tss) {
+	if (client->tss && !client->saved_tss) {
 		if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 			logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build identity\n", component);
 		}
@@ -1560,7 +1678,7 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 
 	logger(LL_INFO, "About to send NORData...\n");
 
-	if (client->tss) {
+	if (client->tss && !client->saved_tss) {
 		if (tss_response_get_path_by_entry(client->tss, "LLB", &llb_path) < 0) {
 			logger(LL_DEBUG, "Could not get LLB path from TSS data, will fetch from build identity\n");
 		}
@@ -1686,6 +1804,9 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	component_data = NULL;
 
 	dict = plist_new_dict();
+	if (client->restore->protocol_version == 7) {
+		plist_dict_set_item(dict, "Operation", plist_new_string("UpdateNOR"));
+	}
 	plist_dict_set_item(dict, "LlbImageData", plist_new_data((char*)llb_data, llb_size));
 	free(llb_data);
 	llb_data = NULL;
@@ -1959,7 +2080,7 @@ static int restore_sign_bbfw(const char* bbfwtmp, plist_t bbtss, const unsigned 
 				logger(LL_ERROR, "can't match element name '%s' to baseband firmware file name.\n", key);
 				goto leave;
 			}
-			char* ext = strrchr(signfn, '.');
+			const char* ext = strrchr(signfn, '.');
 			if (!strcmp(ext, ".fls")) {
 				is_fls = 1;
 			}
@@ -2085,7 +2206,7 @@ static int restore_sign_bbfw(const char* bbfwtmp, plist_t bbtss, const unsigned 
 		const char* fn = zip_get_name(za, i, 0);
 		if (!keep) {
 			if (fn) {
-				char* ext = strrchr(fn, '.');
+				const char* ext = strrchr(fn, '.');
 				if (ext && (!strcmp(ext, ".fls") || !strcmp(ext, ".mbn") || !strcmp(ext, ".elf") || !strcmp(ext, ".bin"))) {
 					keep = 1;
 				}
@@ -2305,7 +2426,7 @@ static int restore_send_baseband_data(struct idevicerestore_client_t* client, pl
 		}
 		logger(LL_INFO, "Sending Baseband TSS request...\n");
 		logger_dump_plist(LL_DEBUG, request, 0);
-		response = tss_request_send(request, client->tss_url);
+		response = restore_get_tss_response(client, request);
 		plist_free(request);
 		plist_free(parameters);
 		if (response == NULL) {
@@ -2685,7 +2806,7 @@ static plist_t restore_get_se_firmware_data(struct idevicerestore_client_t* clie
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending SE TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch SE ticket\n");
@@ -2781,7 +2902,7 @@ static plist_t restore_get_savage_firmware_data(struct idevicerestore_client_t* 
 	logger(LL_DEBUG, "%s: using %s\n", __func__, comp_name);
 
 	logger(LL_INFO, "Sending Savage TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Savage ticket\n");
@@ -2891,7 +3012,7 @@ static plist_t restore_get_yonkers_firmware_data(struct idevicerestore_client_t*
 	logger(LL_DEBUG, "%s: using %s\n", __func__, comp_name);
 
 	logger(LL_INFO, "Sending Yonkers TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Yonkers ticket\n");
@@ -2997,7 +3118,7 @@ static plist_t restore_get_rose_firmware_data(struct idevicerestore_client_t* cl
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending Rose TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Rose ticket\n");
@@ -3143,7 +3264,7 @@ static plist_t restore_get_veridian_firmware_data(struct idevicerestore_client_t
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending Veridian TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Veridian ticket\n");
@@ -3255,7 +3376,7 @@ static plist_t restore_get_generic_firmware_data(struct idevicerestore_client_t*
 
 	logger(LL_INFO, "Sending %s TSS request...\n", s_updater_name);
 	logger_dump_plist(LL_DEBUG, request, 0);
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch %s ticket\n", s_updater_name);
@@ -3317,7 +3438,7 @@ static plist_t restore_get_tcon_firmware_data(struct idevicerestore_client_t* cl
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending Baobab TSS request...\n");
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch Baobab ticket\n");
@@ -3463,7 +3584,7 @@ static plist_t restore_get_timer_firmware_data(struct idevicerestore_client_t* c
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending %s TSS request...\n", ticket_name);
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch %s\n", ticket_name);
@@ -3647,7 +3768,7 @@ static plist_t restore_get_cryptex1_firmware_data(struct idevicerestore_client_t
 	plist_free(parameters);
 
 	logger(LL_INFO, "Sending %s TSS request...\n", s_updater_name);
-	response = tss_request_send(request, client->tss_url);
+	response = restore_get_tss_response(client, request);
 	plist_free(request);
 	if (response == NULL) {
 		logger(LL_ERROR, "Unable to fetch %s ticket\n", s_updater_name);
@@ -4303,7 +4424,7 @@ int restore_send_personalized_boot_object_v3(struct idevicerestore_client_t* cli
 		}
 	} else {
 		// Get component path
-		if (client->tss) {
+		if (client->tss && !client->saved_tss) {
 			if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 				logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build identity\n", component);
 			}
@@ -4466,7 +4587,7 @@ int restore_send_source_boot_object_v4(struct idevicerestore_client_t* client, p
 		path = strdup("SystemVersion.plist");
 	} else {
 		// Get component path
-		if (client->tss) {
+		if (client->tss && !client->saved_tss) {
 			if (tss_response_get_path_by_entry(client->tss, component, &path) < 0) {
 				logger(LL_DEBUG, "No path for component %s in TSS, will fetch from build identity\n", component);
 			}
@@ -4968,12 +5089,16 @@ logger(LL_DEBUG, "%s: type = %s\n", __func__, type);
 					return -1;
 				}
 			} else {
-				logger(LL_INFO, "Not sending NORData... Quitting...\n");
-				client->flags |= FLAG_QUIT;
+				logger(LL_ERROR, "Device requested NORData although NOR flashing was disabled\n");
+				return -1;
 			}
 		}
 
 		else if (!strcmp(type, "BasebandData")) {
+			if (client->flags & FLAG_EXCLUDE) {
+				logger(LL_ERROR, "Device requested BasebandData although baseband flashing was disabled\n");
+				return -1;
+			}
 			if(restore_send_baseband_data(client, message) < 0) {
 				logger(LL_ERROR, "Unable to send baseband data\n");
 				return -1;
@@ -5358,6 +5483,274 @@ static int restore_wait_for_reconnect(struct idevicerestore_client_t* client)
 }
 #endif
 
+static int restore_set_explicit_system_partition_size(plist_t options, plist_t build_identity, int legacy_size_option)
+{
+	plist_t minimum = plist_access_path(build_identity, 2, "Info", "MinimumSystemPartition");
+	uint64_t minimum_mib = 0;
+	if (!minimum || plist_get_node_type(minimum) != PLIST_UINT) {
+		return 0;
+	}
+	plist_get_uint_val(minimum, &minimum_mib);
+	if (!minimum_mib) {
+		return 0;
+	}
+	/* Restored converts this MiB value to a signed byte count. */
+	if (minimum_mib > (uint64_t)INT64_MAX / (1024U * 1024U)) {
+		logger(LL_ERROR, "System partition minimum exceeds the supported size\n");
+		return -1;
+	}
+	plist_dict_set_item(options, "MinimumSystemPartition", plist_new_uint(minimum_mib));
+	if (legacy_size_option) {
+		plist_dict_set_item(options, "SystemPartitionSize", plist_new_uint(minimum_mib));
+	}
+	logger(LL_INFO, "Using minimum system partition size of %" PRIu64 " MiB\n", minimum_mib);
+	return 0;
+}
+
+/* Protocol 7 operation order from tihmstar/idevicerestore c25aefd. */
+struct restore_v7_state {
+	uint64_t stage;
+	int filesystem_sent;
+};
+
+static int restore_wait_for_v7_disconnect(struct idevicerestore_client_t *client)
+{
+	time_t deadline = time(NULL) + 30;
+	logger(LL_INFO, "Waiting for device to leave restore mode...\n");
+	while (!(client->flags & FLAG_QUIT) && time(NULL) < deadline) {
+		mutex_lock(&client->device_event_mutex);
+		int disconnected = client->mode == MODE_UNKNOWN || client->mode == MODE_NORMAL;
+		mutex_unlock(&client->device_event_mutex);
+		if (!disconnected) {
+			char **devices = NULL;
+			int count = 0;
+			if (idevice_get_device_list(&devices, &count) == IDEVICE_E_SUCCESS) {
+				disconnected = 1;
+				for (int i = 0; i < count; i++) {
+					if (client->udid && !strcmp(client->udid, devices[i])) disconnected = 0;
+				}
+			}
+			idevice_device_list_free(devices);
+		}
+		if (disconnected) {
+			logger(LL_INFO, "Device left restore mode\n");
+			return 0;
+		}
+		usleep(250000);
+	}
+	logger(LL_ERROR, "Device acknowledged Goodbye but did not leave restore mode\n");
+	return -1;
+}
+
+static int restore_process_v7_protocol(struct idevicerestore_client_t *client, plist_t message, struct restore_v7_state *state)
+{
+	restored_client_t restore = client->restore->client;
+	plist_t response = plist_dict_get_item(message, "Response");
+	if (!PLIST_IS_STRING(response)) {
+		plist_t type = plist_dict_get_item(message, "MsgType");
+		if (PLIST_IS_STRING(type) && !plist_string_val_compare(type, "ProgressMsg")) {
+			return restore_handle_progress_msg(client, message);
+		}
+		if (PLIST_IS_STRING(type) && !plist_string_val_compare(type, "PreviousRestoreLogMsg")) {
+			return restore_handle_previous_restore_log_msg(restore, message);
+		}
+		logger(LL_ERROR, "Legacy restore response is missing Response\n");
+		logger_dump_plist(LL_ERROR, message, 1);
+		return -1;
+	}
+	if (!plist_string_val_compare(response, "Acknowledged")) {
+		if (state->stage == REBOOT_DEVICE) {
+			/* Goodbye acknowledges before reboot and has no Complete response. */
+			if (restore_wait_for_v7_disconnect(client) < 0) return -1;
+			logger(LL_INFO, "Done restoring\n");
+			restore_finished = 1;
+			client->flags |= FLAG_QUIT;
+			return 0;
+		}
+		if (state->stage == RESTORE_IMAGE && !state->filesystem_sent) {
+			if (restore_send_filesystem(client, NULL) < 0) {
+				logger(LL_ERROR, "Unable to send legacy restore filesystem\n");
+				return -1;
+			}
+			state->filesystem_sent = 1;
+		}
+		logger(LL_INFO, "%s...\n", restore_progress_string((unsigned int)state->stage));
+		return 0;
+	}
+	plist_t status = plist_dict_get_item(message, "Status");
+	int64_t result = -1;
+	if (plist_string_val_compare(response, "Complete") || !PLIST_IS_UINT(status)) {
+		logger(LL_ERROR, "Invalid legacy restore response at stage %" PRIu64 ":\n", state->stage);
+		logger_dump_plist(LL_ERROR, message, 1);
+		return -1;
+	}
+	plist_get_int_val(status, &result);
+	if (result != 0 || (state->stage == RESTORE_IMAGE && !state->filesystem_sent)) {
+		logger(LL_ERROR, "Legacy restore failed at stage %" PRIu64 " (status %" PRIi64 ")\n", state->stage, result);
+		return -1;
+	}
+	int err = 0;
+	uint64_t next_stage = state->stage;
+#define MAKE_STAGE(stage, num) ((uint64_t)(stage) | ((uint64_t)(num) << 32))
+	plist_t dict = plist_new_dict();
+	switch (state->stage) {
+	case MAKE_STAGE(WAIT_FOR_NAND, 0):
+		next_stage = MAKE_STAGE(CREATE_PARTITION_MAP, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Partition"));
+		break;
+
+	case MAKE_STAGE(CREATE_PARTITION_MAP, 0):
+		next_stage = MAKE_STAGE(CREATE_FILESYSTEM, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Erase"));
+		plist_dict_set_item(dict, "VolumeName", plist_new_string("System"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		break;
+
+	case MAKE_STAGE(CREATE_FILESYSTEM, 0):
+		next_stage = MAKE_STAGE(CREATE_FILESYSTEM, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Erase"));
+		plist_dict_set_item(dict, "VolumeName", plist_new_string("Data"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s2"));
+		break;
+
+	case MAKE_STAGE(CREATE_FILESYSTEM, 1):
+		next_stage = MAKE_STAGE(RESTORE_IMAGE, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Restore"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		break;
+
+	case MAKE_STAGE(RESTORE_IMAGE, 0):
+		next_stage = MAKE_STAGE(CHECK_FILESYSTEMS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("FilesystemCheck"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		break;
+
+	case MAKE_STAGE(CHECK_FILESYSTEMS, 0):
+		next_stage = MAKE_STAGE(MOUNT_FILESYSTEMS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Mount"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s1"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt1"));
+		break;
+
+	case MAKE_STAGE(MOUNT_FILESYSTEMS, 0):
+		next_stage = MAKE_STAGE(CHECK_FILESYSTEMS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("FilesystemCheck"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s2"));
+		break;
+
+	case MAKE_STAGE(CHECK_FILESYSTEMS, 1):
+		next_stage = MAKE_STAGE(MOUNT_FILESYSTEMS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Mount"));
+		plist_dict_set_item(dict, "DeviceName", plist_new_string("/dev/disk0s2"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt2"));
+		break;
+
+	case MAKE_STAGE(MOUNT_FILESYSTEMS, 1):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Ditto"));
+		plist_dict_set_item(dict, "SourcePath", plist_new_string("/mnt1/private/var"));
+		plist_dict_set_item(dict, "DestinationPath", plist_new_string("/mnt2"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 0):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("MakeDirectory"));
+		plist_dict_set_item(dict, "Mode", plist_new_string("750"));
+		plist_dict_set_item(dict, "Path", plist_new_string("/mnt2/root/Media"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 1):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 2);
+		plist_dict_set_item(dict, "Operation", plist_new_string("RemovePath"));
+		plist_dict_set_item(dict, "Path", plist_new_string("/mnt1/private/var"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 2):
+		next_stage = MAKE_STAGE(FIXUP_VAR, 3);
+		plist_dict_set_item(dict, "Operation", plist_new_string("MakeDirectory"));
+		plist_dict_set_item(dict, "Mode", plist_new_string("755"));
+		plist_dict_set_item(dict, "Path", plist_new_string("/mnt1/private/var"));
+		break;
+
+	case MAKE_STAGE(FIXUP_VAR, 3):
+		next_stage = MAKE_STAGE(UNMOUNT_FILESYSTEMS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Unmount"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt1"));
+		break;
+
+	case MAKE_STAGE(UNMOUNT_FILESYSTEMS, 0):
+		next_stage = MAKE_STAGE(UNMOUNT_FILESYSTEMS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Unmount"));
+		plist_dict_set_item(dict, "MountPoint", plist_new_string("/mnt2"));
+		break;
+
+	case MAKE_STAGE(UNMOUNT_FILESYSTEMS, 1):
+		next_stage = MAKE_STAGE(FLASH_FIRMWARE, 0);
+		if (client->flags & FLAG_EXCLUDE) {
+			next_stage = MAKE_STAGE(SET_BOOT_STAGE, 0);
+			plist_dict_set_item(dict, "Operation", plist_new_string("SetBootStage"));
+		} else {
+			err = restore_send_nor(client, NULL);
+		}
+		break;
+
+	case MAKE_STAGE(FLASH_FIRMWARE, 0):
+		if ((client->flags & FLAG_EXCLUDE) || strncmp(client->device->product_type, "iPhone", 6)) {
+			next_stage = MAKE_STAGE(SET_BOOT_STAGE, 0);
+			plist_dict_set_item(dict, "Operation", plist_new_string("SetBootStage"));
+			break;
+		}
+		next_stage = MAKE_STAGE(UPDATE_BASEBAND, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("UpdateBaseBand"));
+		plist_dict_set_item(dict, "UpdateBasebandBootloader", plist_new_bool(1));
+		break;
+
+	case MAKE_STAGE(UPDATE_BASEBAND, 0):
+		next_stage = MAKE_STAGE(SET_BOOT_STAGE, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("SetBootStage"));
+		break;
+
+	case MAKE_STAGE(SET_BOOT_STAGE, 0):
+		next_stage = MAKE_STAGE(MODIFY_BOOTARGS, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("SetNVRam"));
+		plist_dict_set_item(dict, "NVRAMKey", plist_new_string("auto-boot"));
+		plist_dict_set_item(dict, "NVRAMValue", plist_new_string("true"));
+		break;
+
+	case MAKE_STAGE(MODIFY_BOOTARGS, 0):
+		next_stage = MAKE_STAGE(MODIFY_BOOTARGS, 1);
+		plist_dict_set_item(dict, "Operation", plist_new_string("SetNVRam"));
+		plist_dict_set_item(dict, "NVRAMKey", plist_new_string("bootdelay"));
+		plist_dict_set_item(dict, "NVRAMValue", plist_new_string("0"));
+		break;
+
+	case MAKE_STAGE(MODIFY_BOOTARGS, 1):
+		next_stage = MAKE_STAGE(REBOOT_DEVICE, 0);
+		plist_dict_set_item(dict, "Operation", plist_new_string("Goodbye"));
+		break;
+	case MAKE_STAGE(REBOOT_DEVICE, 0):
+		logger(LL_ERROR, "Expected acknowledgement of legacy Goodbye\n");
+		err = -1;
+		break;
+
+	default:
+		logger(LL_ERROR, "Unexpected legacy restore stage %" PRIu64 "\n", state->stage);
+		err = -7;
+		break;
+	}
+	if (err == 0 && plist_dict_get_item(dict, "Operation")) {
+		err = restored_send(restore, dict);
+	}
+	plist_free(dict);
+	if (err != 0) {
+		logger(LL_ERROR, "Unable to send legacy restore operation (%d)\n", err);
+		return -1;
+	}
+	state->stage = next_stage;
+	return 0;
+#undef MAKE_STAGE
+}
+
 int restore_device(struct idevicerestore_client_t* client, plist_t build_identity)
 {
 	int err = 0;
@@ -5373,6 +5766,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 #endif
 
 	restore_finished = 0;
+	struct restore_v7_state v7_state = { WAIT_FOR_NAND, 0 };
 
 	// open our connection to the device and verify we're in restore mode
 	err = restore_open_with_timeout(client);
@@ -5382,11 +5776,18 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	}
 	logger(LL_INFO, "Device %s has successfully entered restore mode\n", client->udid);
 
+	if (client->restore->protocol_version == 7 &&
+		(!restore_has_legacy_identity(client) || !(client->flags & FLAG_ERASE))) {
+		logger(LL_ERROR, "Protocol 7 requires an iOS 1/2 device and an erase restore\n");
+		restore_client_free(client);
+		return -1;
+	}
+
 	client->restore->build_identity = build_identity;
 	restore = client->restore->client;
 	device = client->restore->device;
 
-	restore_error = restored_query_value(restore, "HardwareInfo", &hwinfo);
+	restore_error = restore_query_hardware_info(client, restore, client->restore->protocol_version, &hwinfo);
 	if (restore_error == RESTORE_E_SUCCESS) {
 		uint64_t i = 0;
 		uint8_t b = 0;
@@ -5418,7 +5819,10 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_free(hwinfo);
 	}
 
-	restore_error = restored_query_value(restore, "SavedDebugInfo", &hwinfo);
+	hwinfo = NULL;
+	restore_error = (client->restore->protocol_version == 7 ||
+		(client->restore->protocol_version == 11 && restore_has_legacy_identity(client))) ? RESTORE_E_PLIST_ERROR :
+		restored_query_value(restore, "SavedDebugInfo", &hwinfo);
 	if (restore_error == RESTORE_E_SUCCESS) {
 		char* sval = NULL;
 
@@ -5448,15 +5852,17 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_free(hwinfo);
 	}
 
-	if (plist_dict_get_item(client->tss, "BBTicket")) {
+	if ((!client->saved_tss || !client->allow_auxiliary_tss) && plist_dict_get_item(client->tss, "BBTicket")) {
 		client->restore->bbtss = plist_copy(client->tss);
 	}
 
 #ifdef HAVE_REVERSE_PROXY
-	logger(LL_INFO, "Starting Reverse Proxy\n");
+	if (!is_legacy_ios(client->version)) {
+		logger(LL_INFO, "Starting Reverse Proxy\n");
+	}
 	reverse_proxy_client_t rproxy = NULL;
 	int rp_attempt;
-	for (rp_attempt = 0; rp_attempt < 2; rp_attempt++) {
+	for (rp_attempt = 0; !is_legacy_ios(client->version) && rp_attempt < 2; rp_attempt++) {
 		if (reverse_proxy_client_create_with_port(device, &rproxy, REVERSE_PROXY_DEFAULT_PORT) != REVERSE_PROXY_E_SUCCESS) {
 			logger(LL_INFO, "Could not create Reverse Proxy\n");
 		} else {
@@ -5493,13 +5899,15 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	}
 #else
 	fdr_client_t fdr_control_channel = NULL;
-	logger(LL_INFO, "Starting FDR listener thread\n");
-	if (!fdr_connect(device, FDR_CTRL, &fdr_control_channel)) {
+	if (!is_legacy_ios(client->version)) {
+		logger(LL_INFO, "Starting FDR listener thread\n");
+	}
+	if (!is_legacy_ios(client->version) && !fdr_connect(device, FDR_CTRL, &fdr_control_channel)) {
 		if(thread_new(&fdr_thread, fdr_listener_thread, fdr_control_channel)) {
 			logger(LL_ERROR, "Failed to start FDR listener thread\n");
 			fdr_thread = THREAD_T_NULL; /* undefined after failure */
 		}
-	} else {
+	} else if (!is_legacy_ios(client->version)) {
 		logger(LL_ERROR, "Failed to start FDR Ctrl channel\n");
 		// FIXME: We might want to return failure here as it will likely fail
 	}
@@ -5558,10 +5966,6 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		//  But i can't seem to find a plausible formula
 		// It did work with multiple macOS versions
 		plist_dict_set_item(opts, "recoveryOSPartitionSize", plist_new_uint(58201));
-		plist_t msp = plist_access_path(build_identity, 2, "Info", "MinimumSystemPartition");
-		if (msp) {
-			plist_dict_set_item(opts, "SystemPartitionSize", plist_copy(msp));
-		}
 	} else {
 		// FIXME: new on iOS 5 ?
 		plist_dict_set_item(opts, "BootImageType", plist_new_string("User"));
@@ -5572,7 +5976,6 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		// FIXME: not required for iOS 5?
 		//plist_dict_set_item(opts, "DeviceTreeFile", plist_new_string("DeviceTree.k48ap.img3"));
 		plist_dict_set_item(opts, "FirmwareDirectory", plist_new_string("."));
-		// FIXME: usable if false? (-x parameter)
 		plist_dict_set_item(opts, "FlashNOR", plist_new_bool(1));
 		// FIXME: not required for iOS 5?
 		//plist_dict_set_item(opts, "KernelCacheFile", plist_new_string("kernelcache.release.k48"));
@@ -5635,6 +6038,13 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		plist_dict_set_item(opts, "PersonalizedDuringPreflight", plist_new_bool(1));
 	}
 
+	if (client->flags & FLAG_EXCLUDE) {
+		plist_dict_set_item(opts, "FlashNOR", plist_new_bool(0));
+		plist_dict_set_item(opts, "FlashBaseband", plist_new_bool(0));
+		plist_dict_set_item(opts, "UpdateBaseband", plist_new_bool(0));
+		logger(LL_INFO, "NOR and baseband flashing are disabled for this restore\n");
+	}
+
 	// Added for iOS 18.0 and macOS 15.0
 	plist_t async_data_types = plist_new_dict();
 	plist_dict_set_item(async_data_types, "BasebandData", plist_new_bool(0));
@@ -5655,6 +6065,13 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	if (client->restore_boot_args) {
 		plist_dict_set_item(opts, "RestoreBootArgs", plist_new_string(client->restore_boot_args));
 	}
+	/* Use the system partition minimum from the build identity. */
+	if (restore_set_explicit_system_partition_size(opts, build_identity,
+		client->build_major <= 14 || client->macos_variant != NULL) < 0) {
+		plist_free(opts);
+		restore_client_free(client);
+		return -1;
+	}
 	plist_t spp = plist_access_path(build_identity, 2, "Info", "SystemPartitionPadding");
 	if (spp) {
 		spp = plist_copy(spp);
@@ -5673,7 +6090,18 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	plist_dict_set_item(opts, "SystemPartitionPadding", spp);
 
 	// start the restore process
-	restore_error = restored_start_restore(restore, opts, client->restore->protocol_version);
+	if (client->restore->protocol_version == 7) {
+		/* Protocol 7 starts with WaitPath instead of StartRestore. */
+		plist_t command = plist_new_dict();
+		plist_dict_set_item(command, "Operation", plist_new_string("WaitPath"));
+		plist_dict_set_item(command, "Path", plist_new_string("/dev/disk0"));
+		plist_dict_set_item(command, "WaitDelay", plist_new_uint(1));
+		plist_dict_set_item(command, "WaitLimit", plist_new_uint(120));
+		restore_error = restored_send(restore, command);
+		plist_free(command);
+	} else {
+		restore_error = restored_start_restore(restore, opts, client->restore->protocol_version);
+	}
 	if (restore_error != RESTORE_E_SUCCESS) {
 		logger(LL_ERROR, "Unable to start the restore process\n");
 		plist_free(opts);
@@ -5686,7 +6114,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 	// this is the restore process loop, it reads each message in from
 	// restored and passes that data on to it's specific handler
 	while (!(client->flags & FLAG_QUIT)) {
-		if (err != 0 && client->flags & FLAG_IGNORE_ERRORS) {
+		if (err != 0 && (client->flags & FLAG_IGNORE_ERRORS)) {
 			logger(LL_WARNING, "Attempting to continue after critical error, restore might fail...\n");
 			err = 0;
 		}
@@ -5695,6 +6123,7 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		if (err < 0) {
 			logger(LL_ERROR, "Unable to successfully restore device\n");
 			client->flags |= FLAG_QUIT;
+			break;
 		}
 
 		restore_error = restored_receive(restore, &message);
@@ -5715,6 +6144,16 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 			continue;
 		}
 #endif
+
+		if (client->restore->protocol_version == 7) {
+			err = restore_process_v7_protocol(client, message, &v7_state);
+			plist_free(message);
+			message = NULL;
+			if (err < 0) {
+				break;
+			}
+			continue;
+		}
 
 		// discover what kind of message has been received
 		node = plist_dict_get_item(message, "MsgType");
@@ -5876,6 +6315,10 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 		}
 	}
 #endif
+
+	if (client->restore->protocol_version == 7 && !restore_finished && err == 0) {
+		err = -1;
+	}
 
 	restore_client_free(client);
 	return err;

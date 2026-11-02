@@ -78,8 +78,11 @@ int ipsw_print_info(const char* path)
 	if (S_ISDIR(fst.st_mode)) {
 		snprintf(thepath, sizeof(thepath), "%s/BuildManifest.plist", path);
 		if (stat(thepath, &fst) != 0) {
-			logger(LL_ERROR, "'%s': %s\n", thepath, strerror(errno));
-			return -1;
+			snprintf(thepath, sizeof(thepath), "%s/Restore.plist", path);
+			if (stat(thepath, &fst) != 0) {
+				logger(LL_ERROR, "'%s': %s\n", thepath, strerror(errno));
+				return -1;
+			}
 		}
 	} else {
 		snprintf(thepath, sizeof(thepath), "%s", path);
@@ -100,21 +103,31 @@ int ipsw_print_info(const char* path)
 
 	void* plist_buf = NULL;
 	uint32_t plist_len = 0;
+	int restore_plist_fallback = 0;
 
 	if (memcmp(&magic, "PK\x03\x04", 4) == 0) {
 		ipsw_archive_t ipsw = ipsw_open(thepath);
+		if (!ipsw) {
+			return -1;
+		}
 		size_t rlen = 0;
-		if (ipsw_extract_to_memory(ipsw, "BuildManifest.plist", &plist_buf, &rlen) < 0) {
+		const char *manifest_name = "BuildManifest.plist";
+		if (!ipsw_file_exists(ipsw, manifest_name)) {
+			manifest_name = "Restore.plist";
+			restore_plist_fallback = 1;
+		}
+		if (ipsw_extract_to_memory(ipsw, manifest_name, &plist_buf, &rlen) < 0) {
 			ipsw_close(ipsw);
-			logger(LL_ERROR, "Failed to extract BuildManifest.plist from IPSW!\n");
+			logger(LL_ERROR, "Failed to extract %s from IPSW!\n", manifest_name);
 			return -1;
 		}
 		ipsw_close(ipsw);
 		plist_len = (uint32_t)rlen;
 	} else {
+		restore_plist_fallback = !strcmp(path_get_basename(thepath), "Restore.plist");
 		size_t rlen = 0;
 		if (read_file(thepath, &plist_buf, &rlen) < 0) {
-			logger(LL_ERROR, "Failed to read BuildManifest.plist!\n");
+			logger(LL_ERROR, "Failed to read firmware manifest!\n");
 			return -1;
 		}
 		plist_len = (uint32_t)rlen;
@@ -123,6 +136,19 @@ int ipsw_print_info(const char* path)
 	plist_t manifest = NULL;
 	plist_from_memory(plist_buf, plist_len, &manifest, NULL);
 	free(plist_buf);
+	if (!PLIST_IS_DICT(manifest)) {
+		plist_free(manifest);
+		logger(LL_ERROR, "Invalid firmware manifest\n");
+		return -1;
+	}
+	if (restore_plist_fallback) {
+		const char *version = plist_get_string_ptr(plist_dict_get_item(manifest, "ProductVersion"), NULL);
+		if (!is_legacy_ios(version)) {
+			plist_free(manifest);
+			logger(LL_ERROR, "Restore.plist fallback requires iPhone OS 1.x, 2.x, or 3.x\n");
+			return -1;
+		}
+	}
 
 	plist_t val;
 
@@ -137,6 +163,13 @@ int ipsw_print_info(const char* path)
 	val = plist_dict_get_item(manifest, "ProductBuildVersion");
 	if (val) {
 		plist_get_string_val(val, &build_ver);
+	}
+	if (!prod_ver || !build_ver) {
+		free(prod_ver);
+		free(build_ver);
+		plist_free(manifest);
+		logger(LL_ERROR, "Firmware manifest is missing product version or build\n");
+		return -1;
 	}
 
 	cprintf(FG_WHITE "Product Version: " FG_BRIGHT_YELLOW "%s" COLOR_RESET FG_WHITE "   Build: " FG_BRIGHT_YELLOW "%s" COLOR_RESET "\n", prod_ver, build_ver);
@@ -160,8 +193,17 @@ int ipsw_print_info(const char* path)
 			} while (item);
 			free(iter);
 		}
+	} else if (restore_plist_fallback) {
+		const char *product = plist_get_string_ptr(plist_dict_get_item(manifest, "ProductType"), NULL);
+		if (product) {
+			cprintf(" " FG_BRIGHT_CYAN "%s" COLOR_RESET, product);
+		}
 	}
 	cprintf("\n");
+	if (restore_plist_fallback) {
+		plist_free(manifest);
+		return 0;
+	}
 
 	cprintf(FG_WHITE "Build Identities:" COLOR_RESET "\n");
 
@@ -309,6 +351,7 @@ ipsw_archive_t ipsw_open(const char* ipsw)
 	struct stat fst;
 	if (stat(ipsw, &fst) != 0) {
 		logger(LL_ERROR, "ipsw_open %s: %s\n", ipsw, strerror(errno));
+		free(archive);
 		return NULL;
 	}
 	if (S_ISDIR(fst.st_mode)) {
@@ -320,9 +363,14 @@ ipsw_archive_t ipsw_open(const char* ipsw)
 			free(archive);
 			return NULL;
 		}
+		zip_discard(zip);
 		archive->zip = 1;
 	}
 	archive->path = strdup(ipsw);
+	if (!archive->path) {
+		free(archive);
+		return NULL;
+	}
 	return (ipsw_archive_t)archive;
 }
 
@@ -923,9 +971,9 @@ int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int
 	/* older devices don't require personalized firmwares and use a BuildManifesto.plist */
 	if (ipsw_file_exists(ipsw, "BuildManifesto.plist")) {
 		if (ipsw_extract_to_memory(ipsw, "BuildManifesto.plist", &data, &size) == 0) {
-			plist_from_memory((char*)data, size, buildmanifest, NULL);
+			plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
 			free(data);
-			return 0;
+			return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
 		}
 	}
 
@@ -935,9 +983,9 @@ int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int
 	/* whereas newer devices do not require personalized firmwares and use a BuildManifest.plist */
 	if (ipsw_extract_to_memory(ipsw, "BuildManifest.plist", &data, &size) == 0) {
 		*tss_enabled = 1;
-		plist_from_memory((char*)data, size, buildmanifest, NULL);
+		plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
 		free(data);
-		return 0;
+		return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
 	}
 
 	return -1;
@@ -949,9 +997,9 @@ int ipsw_extract_restore_plist(ipsw_archive_t ipsw, plist_t* restore_plist)
 	void* data = NULL;
 
 	if (ipsw_extract_to_memory(ipsw, "Restore.plist", &data, &size) == 0) {
-		plist_from_memory((char*)data, size, restore_plist, NULL);
+		plist_err_t err = plist_from_memory((char*)data, size, restore_plist, NULL);
 		free(data);
-		return 0;
+		return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*restore_plist) ? 0 : -1;
 	}
 
 	return -1;
