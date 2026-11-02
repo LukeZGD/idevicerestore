@@ -196,10 +196,10 @@ int recovery_enter_restore(struct idevicerestore_client_t* client, plist_t build
 	}
 
 	/* send logo and show it */
-	if (recovery_send_applelogo(client, build_identity) < 0) {
-		logger(LL_ERROR, "Unable to send AppleLogo\n");
-		return -1;
-	}
+	// if (recovery_send_applelogo(client, build_identity) < 0) {
+	// 	logger(LL_ERROR, "Unable to send AppleLogo\n");
+	// 	return -1;
+	// }
 
 	/* send components loaded by iBoot */
 	if (recovery_send_loaded_by_iboot(client, build_identity) < 0) {

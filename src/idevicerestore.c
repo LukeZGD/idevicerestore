@@ -158,6 +158,7 @@ static void usage(int argc, char* argv[], int err)
 	"Advanced/experimental options:\n"
 	EXCLUSIVE_USB_ACCESS_FLAG_LINE \
 	"  -c, --custom          Restore with a custom firmware (requires bootrom exploit)\n" \
+	"  -w, --downgrade       Downgrade with a custom firmware\n" \
 	"  -s, --server URL      Override default signing server request URL\n" \
 	"  -x, --exclude         Exclude nor/baseband upgrade (legacy devices)\n" \
 	"  -t, --shsh            Fetch TSS record and save to .shsh file, then exit\n" \
@@ -285,7 +286,7 @@ static void idevice_event_cb(const idevice_event_t *event, void *userdata)
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) connected in normal mode\n", __func__, client->ecid, client->udid);
 			cond_signal(&client->device_event_cond);
 			mutex_unlock(&client->device_event_mutex);
-		} else if (client->ecid && restore_check_mode(client) == 0) {
+		} else if ((client->ecid || (client->device && client->device->chip_id == 0x8900)) && restore_check_mode(client) == 0) {
 			mutex_lock(&client->device_event_mutex);
 			client->mode = MODE_RESTORE;
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) connected in restore mode\n", __func__, client->ecid, client->udid);
@@ -314,7 +315,7 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 		if (!client->udid && !client->ecid) {
 			client->ecid = event->device_info->ecid;
 		}
-		if (client->ecid && event->device_info->ecid == client->ecid) {
+		if ((client->ecid || event->device_info->cpid == 0x8900) && event->device_info->ecid == client->ecid) {
 			mutex_lock(&client->device_event_mutex);
 			switch (event->mode) {
 				case IRECV_K_WTF_MODE:
@@ -343,7 +344,7 @@ static void irecv_event_cb(const irecv_device_event_t* event, void *userdata)
 			mutex_unlock(&client->device_event_mutex);
 		}
 	} else if (event->type == IRECV_DEVICE_REMOVE) {
-		if (client->ecid && event->device_info->ecid == client->ecid) {
+		if ((client->ecid || event->device_info->cpid == 0x8900) && event->device_info->ecid == client->ecid) {
 			mutex_lock(&client->device_event_mutex);
 			client->mode = MODE_UNKNOWN;
 			logger(LL_DEBUG, "%s: device %016" PRIx64 " (udid: %s) disconnected\n", __func__, client->ecid, (client->udid) ? client->udid : "N/A");
@@ -495,10 +496,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		free(wtftmp);
 
 		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-		if (client->mode != MODE_DFU || (client->flags & FLAG_QUIT)) {
+		if ((client->mode != MODE_DFU && client->mode != MODE_WTF) || (client->flags & FLAG_QUIT)) {
 			mutex_unlock(&client->device_event_mutex);
-			/* TODO: verify if it actually goes from 0x1222 -> 0x1227 */
-			logger(LL_ERROR, "Failed to put device into DFU from WTF mode\n");
+			logger(LL_ERROR, "Device did not reconnect in DFU/WTF mode.\n");
 			return -1;
 		}
 		mutex_unlock(&client->device_event_mutex);
@@ -510,7 +510,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		logger(LL_ERROR, "Unable to discover device type\n");
 		return -1;
 	}
-	if (client->ecid == 0) {
+	if (client->ecid == 0 && client->mode != MODE_WTF) {
 		logger(LL_ERROR, "Unable to determine ECID\n");
 		return -1;
 	}
@@ -1410,7 +1410,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return -1;
 	}
 
-	if (client->mode == MODE_DFU) {
+	if (client->mode == MODE_DFU || client->mode == MODE_WTF) {
 		// if the device is in DFU mode, place it into recovery mode
 		dfu_client_free(client);
 		recovery_client_free(client);
@@ -1539,6 +1539,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	idevicerestore_progress(client, RESTORE_STEP_PREPARE, 0.9);
 
 	if (client->mode != MODE_RESTORE) {
+		sleep(3);
 		mutex_lock(&client->device_event_mutex);
 		logger(LL_INFO, "Waiting for device to enter restore mode...\n");
 		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 300000);
@@ -1834,7 +1835,7 @@ int main(int argc, char* argv[])
 #define P_FLAG ""
 #endif
 
-	while ((opt = getopt_long(argc, argv, "dhces:xtli:u:nC:kyPRT:zv" P_FLAG, longopts, &optindex)) > 0) {
+	while ((opt = getopt_long(argc, argv, "dhcwes:xtli:u:nC:kyPRT:zv" P_FLAG, longopts, &optindex)) > 0) {
 		switch (opt) {
 		case 'h':
 			usage(argc, argv, 0);
@@ -1854,6 +1855,10 @@ int main(int argc, char* argv[])
 
 		case 'c':
 			client->flags |= FLAG_CUSTOM;
+			break;
+
+		case 'w':
+			client->flags |= FLAG_DOWNGRADE;;
 			break;
 
 		case 's': {
@@ -2102,6 +2107,7 @@ irecv_device_t get_irecv_device(struct idevicerestore_client_t *client)
 	case _MODE_NORMAL:
 		return normal_get_irecv_device(client);
 
+	case _MODE_WTF:
 	case _MODE_DFU:
 	case _MODE_PORTDFU:
 	case _MODE_RECOVERY:
@@ -2128,6 +2134,7 @@ int is_image4_supported(struct idevicerestore_client_t* client)
 	case _MODE_RESTORE:
 		res = restore_is_image4_supported(client);
 		break;
+	case _MODE_WTF:
 	case _MODE_DFU:
 		res = dfu_is_image4_supported(client);
 		break;
@@ -2352,7 +2359,7 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	plist_t response = NULL;
 	*tss = NULL;
 
-	if ((client->build_major <= 8) || (client->flags & FLAG_CUSTOM)) {
+	if ((client->build_major <= 8) || (client->flags & (FLAG_CUSTOM | FLAG_DOWNGRADE))) {
 		logger(LL_ERROR, "checking for local shsh\n");
 
 		/* first check for local copy */
@@ -2410,6 +2417,9 @@ int get_tss_response(struct idevicerestore_client_t* client, plist_t build_ident
 	if (*tss) {
 		logger(LL_INFO, "Using cached SHSH\n");
 		return 0;
+	} else if (client->flags & FLAG_DOWNGRADE) {
+		logger(LL_ERROR, "Refusing to proceed without saved ticket\n");
+		return -1;
 	} else {
 		logger(LL_INFO, "Trying to fetch new SHSH blob\n");
 	}
@@ -3102,6 +3112,7 @@ const char* get_component_name(const char* filename)
 		{ "batterylow1", 11, "BatteryLow1" },
 		{ "glyphcharging", 13, "BatteryCharging" },
 		{ "glyphplugin", 11, "BatteryPlugin" },
+		{ "batterycharging", 15, "BatteryCharging" },
 		{ "batterycharging0", 16, "BatteryCharging0" },
 		{ "batterycharging1", 16, "BatteryCharging1" },
 		{ "batteryfull", 11, "BatteryFull" },

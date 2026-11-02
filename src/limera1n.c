@@ -32,6 +32,7 @@
 
 int limera1n_is_supported(struct irecv_device *device)
 {
+	return 0;
 	irecv_device_t iphone4 = NULL;
 	irecv_device_t iphone3gs = NULL;
 	irecv_device_t ipod3g = NULL;

@@ -1,0 +1,38 @@
+name: Compile idevicerestore
+on:
+  push:
+    branches:
+      - master
+jobs:
+  linux-limd:
+    strategy:
+      matrix:
+        arch:
+          - runner: ubuntu-22.04
+            name: x86_64
+          - runner: ubuntu-22.04-arm
+            name: aarch64
+
+    name: linux-limd-${{ matrix.arch.name }}
+    runs-on: ${{ matrix.arch.runner }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run compile script
+        run: ./compile.sh limd
+
+      - name: Zip libimobiledevice
+        run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
+
+      - name: Update latest release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload latest \
+            libimobiledevice_linux-${{ matrix.arch.name }}.zip \
+            --clobber -R ${{ github.repository }}
+
+          gh release edit latest \
+            --title "Latest" \
+            --target ${{ github.sha }} -R ${{ github.repository }}

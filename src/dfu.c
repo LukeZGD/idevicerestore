@@ -176,7 +176,7 @@ int dfu_send_component(struct idevicerestore_client_t* client, plist_t build_ide
 	free(component_data);
 	component_data = NULL;
 
-	if (!client->image4supported && client->build_major > 8 && !(client->flags & FLAG_CUSTOM) && !strcmp(component, "iBEC")) {
+	if (!client->image4supported && client->build_major > 8 && !(client->flags & (FLAG_CUSTOM | FLAG_DOWNGRADE)) && !strcmp(component, "iBEC")) {
 		unsigned char* ticket = NULL;
 		unsigned int tsize = 0;
 		if (tss_response_get_ap_ticket(client->tss, &ticket, &tsize) < 0) {
@@ -452,7 +452,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	irecv_get_mode(client->dfu->client, &mode);
 
-	if (mode != IRECV_K_DFU_MODE) {
+	if (mode != IRECV_K_DFU_MODE && mode != IRECV_K_WTF_MODE) {
 		logger(LL_NOTICE, "device is not in DFU mode, assuming recovery mode.\n");
 		client->mode = MODE_RECOVERY;
 		return 0;
@@ -471,25 +471,8 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 
 	if (client->build_major > 8) {
 		/* reconnect */
-		logger(LL_DEBUG, "Waiting for device to disconnect...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-		if (client->mode != MODE_UNKNOWN || (client->flags & FLAG_QUIT)) {
-			mutex_unlock(&client->device_event_mutex);
-			if (!(client->flags & FLAG_QUIT)) {
-				logger(LL_ERROR, "Device did not disconnect. Possibly invalid iBSS. Reset device and try again.\n");
-			}
-			return -1;
-		}
-		logger(LL_DEBUG, "Waiting for device to reconnect...\n");
-		cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
-		if ((client->mode != MODE_DFU && client->mode != MODE_RECOVERY) || (client->flags & FLAG_QUIT)) {
-			mutex_unlock(&client->device_event_mutex);
-			if (!(client->flags & FLAG_QUIT)) {
-				logger(LL_ERROR, "Device did not reconnect in DFU or recovery mode. Possibly invalid iBSS. Reset device and try again.\n");
-			}
-			return -1;
-		}
 		mutex_unlock(&client->device_event_mutex);
+		sleep(2);
 		dfu_client_new(client);
 
 		/* get nonce */
@@ -652,7 +635,7 @@ int dfu_enter_recovery(struct idevicerestore_client_t* client, plist_t build_ide
 		return -1;
 	}
 	logger(LL_DEBUG, "Waiting for device to reconnect in recovery mode...\n");
-	cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 10000);
+	cond_wait_timeout(&client->device_event_cond, &client->device_event_mutex, 60000);
 	if (client->mode != MODE_RECOVERY || (client->flags & FLAG_QUIT)) {
 		mutex_unlock(&client->device_event_mutex);
 		if (!(client->flags & FLAG_QUIT)) {
