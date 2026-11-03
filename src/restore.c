@@ -1770,11 +1770,6 @@ int restore_send_nor(struct idevicerestore_client_t* client, plist_t message)
 	free(llb_data);
 	llb_data = NULL;
 
-	if (client->restore->protocol_version == 7){
-		//iOS 1.0 support
-		plist_dict_set_item(dict,"Operation", plist_new_string("UpdateNOR"));
-	}
-
 	if (client->build_major >= 20) {
 		// Starting with M1 macs, it seems that NorImageData is now a dict.
 		// Sending an array like previous versions results in restore success but the machine will SOS after rebooting.
@@ -6078,7 +6073,6 @@ int restore_device(struct idevicerestore_client_t* client, plist_t build_identit
 			}
 			continue;
 		}
-
 
 		// discover what kind of message has been received
 		node = plist_dict_get_item(message, "MsgType");
