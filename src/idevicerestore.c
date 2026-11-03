@@ -972,7 +972,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 				logger(LL_ERROR, "ERROR: Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
 				return -1;
 			}
-			isRestorePlist = 1;
 		}
 	}
 
@@ -1182,10 +1181,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	logger(LL_INFO, "IPSW Product Version: %s\n", client->version);
 	if (legacy_is_ios1(client) && legacy_set_boot_args(client) < 0) {
 		logger(LL_ERROR, "Unable to prepare iPhone OS 1 restore boot arguments\n");
-		return -1;
-	}
-	if (legacy_is_ios1(client) && (client->ibss_loaded || client->ticket_ap_nonce_size || *client->nonce_generator || client->auxiliary_manifest)) {
-		logger(LL_ERROR, "iPhone OS 1 does not support iBEC nonce preparation or auxiliary signing\n");
 		return -1;
 	}
 	logger(LL_INFO, "IPSW Product Build: %s Major: %d\n", client->build, client->build_major);
@@ -3269,7 +3264,6 @@ const char* get_component_name(const char* filename)
 		{ "batterylow1", 11, "BatteryLow1" },
 		{ "glyphcharging", 13, "BatteryCharging" },
 		{ "glyphplugin", 11, "BatteryPlugin" },
-		{ "batterycharging", 15, "BatteryCharging" },
 		{ "batterycharging0", 16, "BatteryCharging0" },
 		{ "batterycharging1", 16, "BatteryCharging1" },
 		{ "batterycharging.", 16, "BatteryCharging" },
