@@ -968,10 +968,7 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 			is_restore_plist = 1;
 		} else if (ipsw_extract_build_manifest(client->ipsw, &client->build_manifest, &tss_enabled) < 0) {
 			logger(LL_ERROR, "Unable to extract BuildManifest from %s. Firmware file might be corrupt.\n", client->ipsw->path);
-			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
-				logger(LL_ERROR, "ERROR: Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
-				return -1;
-			}
+			return -1;
 		}
 	}
 
