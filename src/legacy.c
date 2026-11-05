@@ -122,12 +122,22 @@ static int legacy_request(struct legacy_usb *usb, unsigned int operation, uint32
 	request[3] = 0x12;
 	write32(request + 4, size);
 	write32(request + 8, address);
-	if (legacy_transfer(usb, 0x04, request, sizeof(request), &transferred) || transferred != sizeof(request)) return -1;
+	int error = legacy_transfer(usb, 0x04, request, sizeof(request), &transferred);
+	if (error || transferred != sizeof(request)) {
+		logger(LL_ERROR, "Legacy recovery request 0x%04x write failed (error %d, %d/%zu bytes)\n",
+			operation, error, transferred, sizeof(request));
+		return -1;
+	}
 	int reply_size = usb->packets[0x83];
-	if (reply_size < 12 || reply_size > (int)sizeof(response)) return -1;
-	if (legacy_transfer(usb, 0x83, response, reply_size, &transferred) || transferred < 12 ||
+	if (reply_size < 12 || reply_size > (int)sizeof(response)) {
+		logger(LL_ERROR, "Invalid legacy recovery reply packet size %d\n", reply_size);
+		return -1;
+	}
+	error = legacy_transfer(usb, 0x83, response, reply_size, &transferred);
+	if (error || transferred < 12 ||
 		(operation ? read16(response) != 0x0808 : read16(response) != 0 || read16(response + 2) != 0x1234)) {
-		logger(LL_ERROR, "Legacy recovery request 0x%04x failed\n", operation);
+		logger(LL_ERROR, "Legacy recovery request 0x%04x reply failed (error %d, %d/%d bytes, status 0x%04x)\n",
+			operation, error, transferred, reply_size, read16(response));
 		return -1;
 	}
 	return 0;
@@ -136,21 +146,44 @@ static int legacy_request(struct legacy_usb *usb, unsigned int operation, uint32
 static int legacy_open(struct legacy_usb *usb, struct idevicerestore_client_t *client)
 {
 	memset(usb, 0, sizeof(*usb));
-	if (irecv_open_with_ecid(&usb->handle, 0) != IRECV_E_SUCCESS) return -1;
+	irecv_error_t error = irecv_open_with_ecid(&usb->handle, 0);
+	if (error != IRECV_E_SUCCESS) {
+		logger(LL_ERROR, "Unable to open legacy recovery device: %s\n", irecv_strerror(error));
+		return -1;
+	}
 	irecv_device_t device = legacy_device(usb->handle, &usb->release);
-	if (!device || !client->device || strcmp(device->product_type, client->device->product_type)) return -1;
+	if (!device || !client->device || strcmp(device->product_type, client->device->product_type)) {
+		logger(LL_ERROR, "Unable to identify the legacy recovery device or match it to the selected firmware\n");
+		return -1;
+	}
 	unsigned char header[9];
-	if (irecv_usb_control_transfer(usb->handle, 0x80, 6, 0x0200, 0, header, sizeof(header), 1000) != sizeof(header)) return -1;
+	int received = irecv_usb_control_transfer(usb->handle, 0x80, 6, 0x0200, 0, header, sizeof(header), 1000);
+	if (received != sizeof(header)) {
+		logger(LL_ERROR, "Unable to read legacy recovery configuration header (result %d, expected %zu bytes)\n",
+			received, sizeof(header));
+		return -1;
+	}
 	unsigned int size = read16(header + 2);
-	if (size < sizeof(header) || size > 4096) return -1;
+	if (size < sizeof(header) || size > 4096) {
+		logger(LL_ERROR, "Invalid legacy recovery configuration size %u\n", size);
+		return -1;
+	}
 	unsigned char *config = malloc(size);
 	if (!config) return -1;
 	int result = -1;
-	if (irecv_usb_control_transfer(usb->handle, 0x80, 6, 0x0200, 0, config, size, 1000) != (int)size) goto out;
+	received = irecv_usb_control_transfer(usb->handle, 0x80, 6, 0x0200, 0, config, size, 1000);
+	if (received != (int)size) {
+		logger(LL_ERROR, "Unable to read legacy recovery configuration (result %d, expected %u bytes)\n",
+			received, size);
+		goto out;
+	}
 	int selected = 0;
 	for (unsigned int offset = 0; offset + 2 <= size;) {
 		unsigned char *d = config + offset;
-		if (d[0] < 2 || offset + d[0] > size) goto out;
+		if (d[0] < 2 || offset + d[0] > size) {
+			logger(LL_ERROR, "Malformed legacy recovery configuration descriptor at offset %u\n", offset);
+			goto out;
+		}
 		if (d[1] == 4 && d[0] >= 9) selected = d[2] == 0 && d[3] == 0;
 		if (selected && d[1] == 5 && d[0] >= 7) {
 			usb->types[d[2]] = d[3] & 3;
@@ -161,7 +194,10 @@ static int legacy_open(struct legacy_usb *usb, struct idevicerestore_client_t *c
 	unsigned char endpoints[] = {0x04, 0x83, 0x02, 0x05};
 	for (unsigned int i = 0; i < sizeof(endpoints); i++) {
 		unsigned int ep = endpoints[i];
-		if (!usb->packets[ep] || (usb->types[ep] != 2 && usb->types[ep] != 3)) goto out;
+		if (!usb->packets[ep] || (usb->types[ep] != 2 && usb->types[ep] != 3)) {
+			logger(LL_ERROR, "Legacy recovery endpoint 0x%02x is missing or unsupported\n", ep);
+			goto out;
+		}
 	}
 	/* Initialize iBoot-159's console worker before sending commands. */
 	result = legacy_request(usb, 0, 0, 0);
