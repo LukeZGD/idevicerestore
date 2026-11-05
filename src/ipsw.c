@@ -968,27 +968,14 @@ int ipsw_extract_build_manifest(ipsw_archive_t ipsw, plist_t* buildmanifest, int
 
 	*tss_enabled = 0;
 
-	/* older devices don't require personalized firmwares and use a BuildManifesto.plist */
-	if (ipsw_file_exists(ipsw, "BuildManifesto.plist")) {
-		if (ipsw_extract_to_memory(ipsw, "BuildManifesto.plist", &data, &size) == 0) {
-			plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
-			free(data);
-			return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
-		}
+	const char *path = ipsw_file_exists(ipsw, "BuildManifest.plist") ? "BuildManifest.plist" : "BuildManifesto.plist";
+	if (ipsw_extract_to_memory(ipsw, path, &data, &size) < 0) {
+		return -1;
 	}
-
-	data = NULL;
-	size = 0;
-
-	/* whereas newer devices do not require personalized firmwares and use a BuildManifest.plist */
-	if (ipsw_extract_to_memory(ipsw, "BuildManifest.plist", &data, &size) == 0) {
-		*tss_enabled = 1;
-		plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
-		free(data);
-		return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
-	}
-
-	return -1;
+	plist_err_t err = plist_from_memory((char*)data, size, buildmanifest, NULL);
+	free(data);
+	*tss_enabled = !strcmp(path, "BuildManifest.plist");
+	return err == PLIST_ERR_SUCCESS && PLIST_IS_DICT(*buildmanifest) ? 0 : -1;
 }
 
 int ipsw_extract_restore_plist(ipsw_archive_t ipsw, plist_t* restore_plist)
