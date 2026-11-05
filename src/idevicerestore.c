@@ -427,6 +427,13 @@ static void probe_wtf_device(struct idevicerestore_client_t *client)
 	irecv_close(device);
 }
 
+static int ipsw_uses_build_manifest(struct idevicerestore_client_t *client)
+{
+	/* Custom IPSWs may retain an obsolete BuildManifesto.plist. */
+	return client->ipsw && (ipsw_file_exists(client->ipsw, "BuildManifest.plist") ||
+		(!(client->flags & FLAG_CUSTOM) && ipsw_file_exists(client->ipsw, "BuildManifesto.plist")));
+}
+
 static irecv_device_t select_s5l8900_device(struct idevicerestore_client_t *client)
 {
 	const char *products[] = { "iPhone1,1", "iPhone1,2", "iPod1,1" };
@@ -986,33 +993,28 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 		return 0;
 	}
 
-	// extract buildmanifest
 	int is_restore_plist = 0;
-	if (client->flags & FLAG_CUSTOM) {
-		logger(LL_INFO, "Extracting Restore.plist from IPSW\n");
-		if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
-			logger(LL_ERROR, "Unable to extract Restore.plist from %s. Firmware file might be corrupt.\n", client->ipsw->path);
+	int use_build_manifest = ipsw_uses_build_manifest(client);
+	if (use_build_manifest) {
+		logger(LL_INFO, "Extracting BuildManifest from IPSW\n");
+		if (ipsw_extract_build_manifest(client->ipsw, &client->build_manifest, &tss_enabled) < 0) {
+			logger(LL_ERROR, "Unable to extract BuildManifest from %s. Firmware file might be corrupt.\n", client->ipsw->path);
 			return -1;
 		}
-		is_restore_plist = 1;
 	} else {
-		logger(LL_INFO, "Extracting BuildManifest from IPSW\n");
-		if (!ipsw_file_exists(client->ipsw, "BuildManifest.plist") &&
-			!ipsw_file_exists(client->ipsw, "BuildManifesto.plist")) {
-			if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
-				logger(LL_ERROR, "Missing BuildManifest and valid Restore.plist\n");
-				return -1;
-			}
+		logger(LL_INFO, "Extracting Restore.plist from IPSW\n");
+		if (ipsw_extract_restore_plist(client->ipsw, &client->build_manifest) < 0) {
+			logger(LL_ERROR, "Unable to extract valid Restore.plist from %s\n", client->ipsw->path);
+			return -1;
+		}
+		if (!(client->flags & FLAG_CUSTOM)) {
 			const char *version = plist_get_string_ptr(plist_dict_get_item(client->build_manifest, "ProductVersion"), NULL);
 			if (!is_legacy_ios(version)) {
 				logger(LL_ERROR, "Missing BuildManifest; Restore.plist fallback requires iPhone OS 1.x, 2.x, or 3.x\n");
 				return -1;
 			}
-			is_restore_plist = 1;
-		} else if (ipsw_extract_build_manifest(client->ipsw, &client->build_manifest, &tss_enabled) < 0) {
-			logger(LL_ERROR, "Unable to extract BuildManifest from %s. Firmware file might be corrupt.\n", client->ipsw->path);
-			return -1;
 		}
+		is_restore_plist = 1;
 	}
 
 	if (client->flags & FLAG_CUSTOM) {
@@ -1217,6 +1219,9 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	if (!client->version || !client->build) {
 		return -1;
 	}
+	if (client->device->chip_id == 0x8900) {
+		tss_enabled = 0;
+	}
 
 	logger(LL_INFO, "IPSW Product Version: %s\n", client->version);
 	if (legacy_is_ios1(client) && legacy_set_boot_args(client) < 0) {
@@ -1252,6 +1257,12 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	if (build_identity == NULL) {
 		logger(LL_ERROR, "Unable to find a matching build identity\n");
 		return -1;
+	}
+	if (!is_restore_plist && legacy_is_ios1(client)) {
+		const char *behavior = plist_get_string_ptr(plist_access_path(build_identity, 2, "Info", "RestoreBehavior"), NULL);
+		if (behavior && !strcmp(behavior, "Erase")) {
+			client->flags |= FLAG_ERASE;
+		}
 	}
 
 	client->macos_variant = build_manifest_get_build_identity_for_model_with_variant(client->build_manifest, client->device->hardware_model, RESTORE_VARIANT_MACOS_RECOVERY_OS, 1);
