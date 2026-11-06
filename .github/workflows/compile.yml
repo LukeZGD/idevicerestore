@@ -1,4 +1,5 @@
 name: Compile idevicerestore
+# on: [push]
 on:
   push:
     branches:
@@ -21,6 +22,11 @@ jobs:
 
       - name: Run compile script
         run: ./compile.sh limd
+
+      # - uses: actions/upload-artifact@v7
+      #   with:
+      #     name: libimobiledevice_linux-${{ matrix.arch.name }}
+      #     path: bin/
 
       - name: Zip libimobiledevice
         run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
