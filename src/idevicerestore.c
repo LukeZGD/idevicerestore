@@ -1180,9 +1180,6 @@ int idevicerestore_start(struct idevicerestore_client_t* client)
 	if (!client->version || !client->build) {
 		return -1;
 	}
-	if (client->device->chip_id == 0x8900) {
-		tss_enabled = 0;
-	}
 
 	logger(LL_INFO, "IPSW Product Version: %s\n", client->version);
 	if (legacy_is_ios1(client) && legacy_set_boot_args(client) < 0) {
