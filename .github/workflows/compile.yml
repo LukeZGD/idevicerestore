@@ -23,22 +23,22 @@ jobs:
       - name: Run compile script
         run: ./compile.sh limd
 
-      # - uses: actions/upload-artifact@v7
-      #   with:
-      #     name: libimobiledevice_linux-${{ matrix.arch.name }}
-      #     path: bin/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: libimobiledevice_linux-${{ matrix.arch.name }}
+          path: bin/
 
-      - name: Zip libimobiledevice
-        run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
-
-      - name: Update latest release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload latest \
-            libimobiledevice_linux-${{ matrix.arch.name }}.zip \
-            --clobber -R ${{ github.repository }}
-
-          gh release edit latest \
-            --title "Latest" \
-            --target ${{ github.sha }} -R ${{ github.repository }}
+      # - name: Zip libimobiledevice
+      #   run: zip -r libimobiledevice_linux-${{ matrix.arch.name }}.zip bin/
+      #
+      # - name: Update latest release
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      #   run: |
+      #     gh release upload latest \
+      #       libimobiledevice_linux-${{ matrix.arch.name }}.zip \
+      #       --clobber -R ${{ github.repository }}
+      #
+      #     gh release edit latest \
+      #       --title "Latest" \
+      #       --target ${{ github.sha }} -R ${{ github.repository }}
